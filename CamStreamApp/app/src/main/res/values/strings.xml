@@ -1,0 +1,30 @@
+<resources>
+    <string name="app_name">CamStream</string>
+    <string name="server_url">URL del servidor</string>
+    <string name="server_hint">http://192.168.1.50:8080</string>
+    <string name="start_stream">Iniciar transmisión</string>
+    <string name="stop_stream">Detener</string>
+    <string name="status_idle">Detenido</string>
+    <string name="status_camera_required">Se requiere permiso de cámara</string>
+    <string name="status_notifications_required">Se requiere permiso de notificaciones</string>
+    <string name="status_starting">Iniciando cámara…</string>
+    <string name="status_streaming">Transmitiendo</string>
+    <string name="status_error">Error de conexión</string>
+    <string name="quality_label">Calidad</string>
+    <string name="fps_label">FPS</string>
+    <string name="facing_back">Trasera</string>
+    <string name="facing_front">Frontal</string>
+    <string name="rotate_0">Rotar 0°</string>
+    <string name="rotate_90">Rotar 90°</string>
+    <string name="rotate_180">Rotar 180°</string>
+    <string name="rotate_270">Rotar 270°</string>
+    <string name="mirror_off">Espejo off</string>
+    <string name="mirror_on">Espejo on</string>
+    <string name="notification_title">CamStream transmitiendo</string>
+    <string name="notification_text">Toca para abrir</string>
+    <string name="notification_channel_name">Transmisión</string>
+    <string name="notification_channel_desc">Notificación del servicio de transmisión de cámara</string>
+    <string name="action_stop">Detener</string>
+    <string name="grant_permissions">Conceder permisos</string>
+    <string name="on_air">EN VIVO</string>
+</resources>

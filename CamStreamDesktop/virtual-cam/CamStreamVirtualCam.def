@@ -1,0 +1,7 @@
+; CamStream Virtual Camera - Module definition file
+EXPORTS
+    DllMain
+    DllCanUnloadNow       PRIVATE
+    DllGetClassObject     PRIVATE
+    DllRegisterServer     PRIVATE
+    DllUnregisterServer   PRIVATE

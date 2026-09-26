@@ -1,0 +1,53 @@
+{
+  "name": "camstream-desktop",
+  "version": "1.0.0",
+  "description": "Visor, grabador y camara virtual para el stream de CamStream",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/stream-integration.js",
+    "build": "electron-builder --win portable --x64",
+    "pack": "electron-builder --dir --win --x64"
+  },
+  "author": "CamStream",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.2.0",
+    "electron-builder": "^24.9.1",
+    "electron-packager": "^17.1.2"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.1.0",
+    "jpeg-js": "^0.4.4",
+    "koffi": "^2.10.0"
+  },
+  "build": {
+    "appId": "com.anomaly.camstream.desktop",
+    "productName": "CamStreamDesktop",
+    "asarUnpack": ["node_modules/ffmpeg-static/ffmpeg.exe", "virtual-cam/bin/CamStreamVirtualCam.dll"],
+    "files": [
+      "main.js",
+      "preload.js",
+      "viewer.html",
+      "styles.css",
+      "ndi-sender.js",
+      "h264-decoder.js",
+      "virtual-cam-writer.js",
+      "virtual-cam/**/*",
+      "!virtual-cam/**/*.obj",
+      "!virtual-cam/**/*.lib",
+      "!virtual-cam/**/*.exp",
+      "!virtual-cam/test-camera*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable",
+      "signAndEditExecutable": false,
+      "artifactName": "CamStreamDesktop-Portable-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "CamStreamDesktop-Portable-${version}.exe"
+    }
+  }
+}

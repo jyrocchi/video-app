@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Visor de Cámara</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0a0a0a;
+    color: #fff;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+    gap: 16px;
+  }
+  h1 { font-size: 20px; font-weight: 500; }
+  #frame {
+    width: 100%;
+    max-width: 960px;
+    aspect-ratio: 16 / 9;
+    background: #000;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+  }
+  #frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  #placeholder {
+    color: #555;
+    font-size: 15px;
+    text-align: center;
+    padding: 20px;
+  }
+  #frame img { display: none; }
+  #frame.live #placeholder { display: none; }
+  #frame.live img { display: block; }
+  .info {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+    font-size: 13px;
+    color: #aaa;
+  }
+  .pill {
+    background: #1a1a1a;
+    padding: 6px 14px;
+    border-radius: 14px;
+  }
+  .pill.ok { background: #0a4; color: #fff; }
+  .pill.err { background: #a33; color: #fff; }
+  .qr-box {
+    background: #1a1a1a;
+    padding: 16px;
+    border-radius: 12px;
+    text-align: center;
+    max-width: 320px;
+    font-size: 13px;
+  }
+  .qr-box a { color: #4af; word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>🖥️ Visor de Cámara Remota</h1>
+  <div id="frame">
+    <img id="img" alt="">
+    <div id="placeholder">Esperando señal del celular...</div>
+  </div>
+  <div class="info">
+    <span class="pill" id="statusPill">Desconectado</span>
+    <span class="pill" id="fpsPill">-- fps</span>
+    <span class="pill" id="sizePill">--</span>
+  </div>
+  <div class="qr-box">
+    📱 Abre esta URL en tu celular:
+    <div style="margin-top:8px"><a id="phoneLink" href="#">--</a></div>
+  </div>
+
+<script>
+const img = document.getElementById('img');
+const frame = document.getElementById('frame');
+const statusPill = document.getElementById('statusPill');
+const fpsPill = document.getElementById('fpsPill');
+const sizePill = document.getElementById('sizePill');
+const phoneLink = document.getElementById('phoneLink');
+
+const baseUrl = location.origin;
+const phoneUrl = baseUrl + '/phone';
+phoneLink.href = phoneUrl;
+phoneLink.textContent = phoneUrl;
+
+let lastFrameAt = 0;
+let frameCount = 0;
+let fpsTimer = null;
+
+fpsTimer = setInterval(() => {
+  fpsPill.textContent = frameCount + ' fps';
+  frameCount = 0;
+}, 1000);
+
+const es = new EventSource('/stream');
+es.onopen = () => {
+  statusPill.textContent = 'Conectado';
+  statusPill.className = 'pill ok';
+};
+es.onerror = () => {
+  statusPill.textContent = 'Reconectando...';
+  statusPill.className = 'pill err';
+};
+es.onmessage = (ev) => {
+  if (!ev.data || ev.data.startsWith(':')) return;
+  img.src = 'data:image/jpeg;base64,' + ev.data;
+  frame.classList.add('live');
+  lastFrameAt = Date.now();
+  frameCount++;
+  sizePill.textContent = Math.round(ev.data.length * 0.75 / 1024) + ' KB';
+};
+
+setInterval(() => {
+  if (lastFrameAt && (Date.now() - lastFrameAt > 3000)) {
+    statusPill.textContent = 'Sin señal';
+    statusPill.className = 'pill err';
+    frame.classList.remove('live');
+  }
+}, 1000);
+</script>
+</body>
+</html>

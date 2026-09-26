@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>CamStream Desktop</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">●</span>
+      <span>CamStream Desktop</span>
+    </div>
+    <div class="status">
+      <span id="connDot" class="dot"></span>
+      <span id="connText">Sin senal</span>
+      <span class="sep">|</span>
+      <span id="fpsText">-- fps</span>
+      <span class="sep">|</span>
+      <span id="sizeText">-- KB</span>
+    </div>
+  </header>
+
+  <main>
+    <div id="frameBox">
+      <img id="frame" alt="">
+      <div id="placeholder">
+        <div class="big-icon">📱</div>
+        <h2>Esperando conexion del celular</h2>
+        <p>Abre la app <b>CamStream</b> en tu Android y configura esta URL:</p>
+        <div id="phoneUrlBox"></div>
+        <p class="hint">Puerto: <span id="portText">8080</span></p>
+        <p class="hint">Por USB: ejecuta <code>adb reverse tcp:8080 tcp:8080</code> y usa <code>http://127.0.0.1:8080</code> en Android.</p>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="left">
+      <button id="recordBtn" class="btn-primary">
+        <span class="rec-dot"></span>
+        <span id="recordLabel">Grabar</span>
+      </button>
+      <button id="openFolderBtn" class="btn-secondary" disabled>Abrir carpeta</button>
+      <button id="virtualCamBtn" class="btn-secondary">Instalar cámara virtual</button>
+    </div>
+    <div class="right">
+      <label class="toggle">
+        <input type="checkbox" id="ndiToggle">
+        <span>Salida NDI</span>
+      </label>
+      <span id="ndiStatus" class="ndi-status"></span>
+    </div>
+  </footer>
+
+  <div id="recIndicator" class="rec-indicator hidden">
+    <span class="rec-dot"></span>
+    <span id="recTime">00:00</span>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const img = $('frame');
+const placeholder = $('placeholder');
+const phoneUrlBox = $('phoneUrlBox');
+const portText = $('portText');
+const connDot = $('connDot');
+const connText = $('connText');
+const fpsText = $('fpsText');
+const sizeText = $('sizeText');
+const recordBtn = $('recordBtn');
+const recordLabel = $('recordLabel');
+const openFolderBtn = $('openFolderBtn');
+const recIndicator = $('recIndicator');
+const recTime = $('recTime');
+const ndiToggle = $('ndiToggle');
+const ndiStatus = $('ndiStatus');
+const virtualCamBtn = $('virtualCamBtn');
+
+let recording = false;
+let recordingStart = 0;
+let recTimer = null;
+
+async function init() {
+  const info = await window.api.getInfo();
+  portText.textContent = info.port;
+  const url = `http://${info.ips[0] || 'localhost'}:${info.port}`;
+  phoneUrlBox.innerHTML = `<code>${url}</code>`;
+
+  ndiToggle.checked = info.ndi;
+  virtualCamBtn.textContent = info.virtualCamInstalled ? 'Quitar cámara virtual' : 'Instalar cámara virtual';
+  if (info.ndi) {
+    ndiStatus.textContent = 'Activo';
+    ndiStatus.className = 'ndi-status on';
+  } else if (info.ndiError) {
+    ndiStatus.textContent = 'NDI no disponible';
+    ndiStatus.className = 'ndi-status off';
+  } else {
+    ndiStatus.textContent = '';
+  }
+}
+
+window.api.onEvent((payload) => {
+  if (payload.type === 'frame') {
+    if (!img.src) placeholder.style.display = 'none';
+    img.src = 'data:image/jpeg;base64,' + payload.b64;
+    img.style.display = 'block';
+    connDot.classList.add('on');
+    connText.textContent = 'Conectado';
+    sizeText.textContent = Math.round(payload.size / 1024) + ' KB';
+  } else if (payload.type === 'fps') {
+    fpsText.textContent = payload.value + ' fps';
+  } else if (payload.type === 'recording-started') {
+    recording = true;
+    recordingStart = Date.now();
+    recordLabel.textContent = 'Detener';
+    openFolderBtn.disabled = false;
+    recIndicator.classList.remove('hidden');
+    recTimer = setInterval(() => {
+      const sec = Math.floor((Date.now() - recordingStart) / 1000);
+      const m = String(Math.floor(sec / 60)).padStart(2, '0');
+      const s = String(sec % 60).padStart(2, '0');
+      recTime.textContent = `${m}:${s}`;
+    }, 250);
+  } else if (payload.type === 'recording-stopped') {
+    recording = false;
+    recordLabel.textContent = 'Grabar';
+    recIndicator.classList.add('hidden');
+    if (recTimer) { clearInterval(recTimer); recTimer = null; }
+  } else if (payload.type === 'recording-error') {
+    alert('Error en grabacion: ' + payload.message);
+    recording = false;
+    recordLabel.textContent = 'Grabar';
+    recIndicator.classList.add('hidden');
+    if (recTimer) { clearInterval(recTimer); recTimer = null; }
+  } else if (payload.type === 'server-error') {
+    if (payload.code === 'EADDRINUSE') {
+      const placeholderEl = document.getElementById('placeholder');
+      placeholderEl.innerHTML = `
+        <div class="big-icon">⚠️</div>
+        <h2>Puerto ${payload.port} ocupado</h2>
+        <p>Cierra el proceso que lo usa y reinicia la app.</p>
+        <p style="margin-top:8px;font-size:12px;opacity:0.7">PowerShell: <code>Get-NetTCPConnection -LocalPort ${payload.port} | Stop-Process -Force</code></p>
+      `;
+    }
+  } else if (payload.type === 'decoder-error') {
+    connText.textContent = 'Error de vídeo: ' + payload.message;
+  }
+});
+
+recordBtn.addEventListener('click', async () => {
+  if (recording) {
+    await window.api.stopRecording();
+  } else {
+    const res = await window.api.startRecording({ fps: 30 });
+    if (!res.ok && !res.canceled) {
+      alert('No se pudo iniciar la grabacion: ' + (res.error || ''));
+    }
+  }
+});
+
+openFolderBtn.addEventListener('click', () => {
+  window.api.openFolder();
+});
+
+virtualCamBtn.addEventListener('click', async () => {
+  virtualCamBtn.disabled = true;
+  const installing = virtualCamBtn.textContent.startsWith('Instalar');
+  try {
+    const result = await window.api.setVirtualCamera(installing);
+    if (!result.ok) throw new Error(result.error || 'No se pudo cambiar el registro de la cámara.');
+    virtualCamBtn.textContent = result.installed ? 'Quitar cámara virtual' : 'Instalar cámara virtual';
+    alert(result.installed
+      ? 'CamStream Virtual Camera quedó instalada para este usuario. Cierra y vuelve a abrir Zoom/Discord para que aparezca.'
+      : 'CamStream Virtual Camera quedó desinstalada.');
+  } catch (error) {
+    alert(`Error con la cámara virtual: ${error.message}`);
+  } finally {
+    virtualCamBtn.disabled = false;
+  }
+});
+
+ndiToggle.addEventListener('change', async () => {
+  const res = await window.api.toggleNdi();
+  if (res.ndi) {
+    ndiStatus.textContent = 'Activo';
+    ndiStatus.className = 'ndi-status on';
+  } else {
+    ndiStatus.textContent = res.ndiError ? 'NDI no disponible' : '';
+    ndiStatus.className = 'ndi-status off';
+  }
+  ndiToggle.checked = res.ndi;
+});
+
+setInterval(async () => {
+  const info = await window.api.getInfo();
+  if (!info.ndi) ndiToggle.checked = false;
+}, 3000);
+
+init();
+</script>
+</body>
+</html>
