@@ -30,7 +30,12 @@ class H264Decoder {
     this.lastError = null;
     this.onFrame = null; // (bgraBuffer, width, height, timestampMs)
     this.queueBytes = 0;
+    this.peakQueueBytes = 0;
     this.framesDecoded = 0;
+    this.totalFramesDecoded = 0;
+    this.decodedFps = 0;
+    this.fpsWindowFrames = 0;
+    this.fpsWindowStartedAt = Date.now();
     this.lastReport = Date.now();
     this.startedAt = 0;
     this._inputDrainTimer = null;
@@ -49,6 +54,8 @@ class H264Decoder {
       '-probesize', '32',
       '-analyzeduration', '0',
       '-fflags', '+genpts+flush_packets',
+      '-flags', 'low_delay',
+      '-threads', '1',
       '-err_detect', 'ignore_err',
       '-f', 'h264',
       '-i', 'pipe:0',
@@ -98,13 +105,26 @@ class H264Decoder {
   pushH264(data) {
     if (!this.proc || !this.ffmpegReady) return false;
     try {
-      const ok = this.proc.stdin.write(data);
+      const proc = this.proc;
       this.queueBytes += data.length;
+      this.peakQueueBytes = Math.max(this.peakQueueBytes, this.queueBytes);
+      const ok = proc.stdin.write(data, () => {
+        this.queueBytes = Math.max(0, this.queueBytes - data.length);
+      });
       return ok;
     } catch (e) {
       this.lastError = e.message;
       return false;
     }
+  }
+
+  getStats() {
+    return {
+      queueBytes: this.queueBytes,
+      peakQueueBytes: this.peakQueueBytes,
+      decodedFps: this.decodedFps,
+      framesDecoded: this.totalFramesDecoded
+    };
   }
 
   _consumeStdout() {
@@ -118,6 +138,15 @@ class H264Decoder {
         const offset = i * FRAME_BYTES;
         const frameBuf = Buffer.from(buf.buffer, buf.byteOffset + offset, FRAME_BYTES);
         this.framesDecoded++;
+        this.totalFramesDecoded++;
+        this.fpsWindowFrames++;
+        const fpsNow = Date.now();
+        const fpsElapsed = fpsNow - this.fpsWindowStartedAt;
+        if (fpsElapsed >= 1000) {
+          this.decodedFps = Math.round(this.fpsWindowFrames * 1000 / fpsElapsed);
+          this.fpsWindowFrames = 0;
+          this.fpsWindowStartedAt = fpsNow;
+        }
         if (this.onFrame) {
           try {
             this.onFrame(frameBuf, WIDTH, HEIGHT, Date.now());

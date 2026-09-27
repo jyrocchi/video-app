@@ -31,11 +31,14 @@ class MainActivity : AppCompatActivity() {
     private var facingBack = true
     private var rotationStep = 0
     private var mirrorEnabled = false
+    @Volatile private var lastConnectionState: Boolean? = null
+    @Volatile private var lastPcLogAtMs = 0L
+    private var lastDisplayedLogs = ""
 
     private val qualityOptions = arrayOf("Baja (50)", "Media (70)", "Alta (85)")
     private val qualityValues = intArrayOf(50, 70, 85)
-    private val fpsOptions = arrayOf("10", "15", "24", "30")
-    private val fpsValues = intArrayOf(10, 15, 24, 30)
+    private val fpsOptions = arrayOf("10", "15", "20", "24", "30")
+    private val fpsValues = intArrayOf(10, 15, 20, 24, 30)
 
     private val permissions = mutableListOf(Manifest.permission.CAMERA).apply {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -70,6 +73,8 @@ class MainActivity : AppCompatActivity() {
             android.R.layout.simple_spinner_dropdown_item, qualityOptions)
         binding.fpsSpinner.adapter = ArrayAdapter(this,
             android.R.layout.simple_spinner_dropdown_item, fpsOptions)
+        binding.qualitySpinner.setSelection(qualityValues.indexOf(85))
+        binding.fpsSpinner.setSelection(fpsValues.indexOf(20))
 
         binding.startButton.setOnClickListener { onToggle() }
         binding.facingButton.setOnClickListener {
@@ -157,6 +162,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun onToggle() {
         if (streaming) {
+            StreamStats.addLog("Deteniendo transmisión")
             StreamService.stop(this)
             streaming = false
             stopStatsPolling()
@@ -178,6 +184,11 @@ class MainActivity : AppCompatActivity() {
             saveUrl(url)
             val quality = qualityValues[binding.qualitySpinner.selectedItemPosition]
             val fps = fpsValues[binding.fpsSpinner.selectedItemPosition]
+            StreamStats.clearLog()
+            StreamStats.addLog("Iniciando transmisión: objetivo ${fps}fps, calidad $quality")
+            lastDisplayedLogs = ""
+            lastConnectionState = null
+            lastPcLogAtMs = 0L
             streaming = true
             showOnAirIndicator()
             StreamService.start(this, url, fps, quality, facingBack, rotationStep, mirrorEnabled)
@@ -207,21 +218,36 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             if (!streaming) {
                 binding.statsText.text = ""
+                binding.logPanel.visibility = android.view.View.GONE
                 return
             }
+            binding.logPanel.visibility = android.view.View.VISIBLE
             val state = StreamStats.state.get() ?: "—"
             val fps = StreamStats.lastFps.get() ?: "—"
             val err = StreamStats.lastError.get()
+            val desktop = StreamStats.desktopStats.get()
             val txt = buildString {
                 append(state)
                 append("\n")
                 append(fps)
+                if (desktop != null) {
+                    append("\n")
+                    append(desktop)
+                }
                 if (err != null) {
                     append("\nERR: ")
                     append(err)
                 }
             }
             binding.statsText.text = txt
+            val logs = StreamStats.getLogSnapshot().joinToString("\n")
+            if (logs != lastDisplayedLogs) {
+                lastDisplayedLogs = logs
+                binding.logText.text = logs
+                binding.logScroll.post {
+                    binding.logScroll.fullScroll(android.view.View.FOCUS_DOWN)
+                }
+            }
             statsHandler.postDelayed(this, 500)
         }
     }
@@ -233,6 +259,7 @@ class MainActivity : AppCompatActivity() {
     private fun stopStatsPolling() {
         statsHandler.removeCallbacks(statsRunnable)
         binding.statsText.text = ""
+        binding.logPanel.visibility = android.view.View.GONE
     }
 
     private suspend fun ping(base: String): Boolean = withContext(Dispatchers.IO) {
@@ -247,8 +274,37 @@ class MainActivity : AppCompatActivity() {
                 if (code !in 200..299) return@withContext false
                 val body = c.inputStream.bufferedReader().use { it.readText() }
                 val obj = JSONObject(body)
+                val h264 = obj.optJSONObject("h264")
+                val decoder = h264?.optJSONObject("decoder")
+                val pcOutput = h264?.optJSONObject("output")
+                if (h264 != null) {
+                    val pcLine = "PC active=${h264.optBoolean("active")} " +
+                        "RX=${h264.optLong("nals")}NAL/${h264.optLong("bytes")}B " +
+                        "chunkGap=${h264.optDouble("avgChunkGapMs")}ms push=${h264.optDouble("avgPushMs")}ms " +
+                        "pipeQ=${decoder?.optLong("queueBytes") ?: 0}/" +
+                        "${decoder?.optLong("peakQueueBytes") ?: 0}B " +
+                        "bp=${h264.optLong("backpressure")} dec=${decoder?.optInt("decodedFps") ?: 0}fps " +
+                        "frames=${decoder?.optLong("framesDecoded") ?: 0} " +
+                        "out=${pcOutput?.optDouble("callbackMs") ?: 0}ms " +
+                        "NDI=${pcOutput?.optDouble("ndiMs") ?: 0}ms " +
+                        "cam=${pcOutput?.optDouble("virtualCamMs") ?: 0}ms " +
+                        "JPEG=${pcOutput?.optDouble("jpegMs") ?: 0}ms " +
+                        "pub=${pcOutput?.optDouble("publishMs") ?: 0}ms " +
+                        "render=${pcOutput?.optDouble("rendererAckMs") ?: 0}ms"
+                    StreamStats.desktopStats.set(pcLine)
+                    val nowMs = System.currentTimeMillis()
+                    if (nowMs - lastPcLogAtMs >= PC_LOG_INTERVAL_MS) {
+                        StreamStats.addLog(pcLine)
+                        lastPcLogAtMs = nowMs
+                    }
+                }
                 // Reachability is distinct from receiving a decoded video frame.
-                obj.optBoolean("connected", false) && obj.optInt("lastFrameAge", 999) < 5
+                val connected = obj.optBoolean("connected", false) && obj.optInt("lastFrameAge", 999) < 5
+                if (lastConnectionState != connected) {
+                    StreamStats.addLog(if (connected) "Servidor recibiendo video" else "Servidor sin cuadros recientes")
+                    lastConnectionState = connected
+                }
+                connected
             } finally { c.disconnect() }
         } catch (_: Exception) { false }
     }
@@ -308,5 +364,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val PC_LOG_INTERVAL_MS = 3000L
     }
 }

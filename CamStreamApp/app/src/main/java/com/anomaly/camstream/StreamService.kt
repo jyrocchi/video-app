@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -18,7 +20,9 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -50,9 +54,15 @@ class StreamService : LifecycleService() {
 
     private val captureCount = AtomicLong(0)
     private val nalCount = AtomicLong(0)
-    private val lastProcessMs = AtomicLong(0)
+    private val nextProcessTimestampNs = AtomicLong(0)
+    private val lastEncodeTimeUs = AtomicLong(0)
+    private val cameraFrameCount = AtomicLong(0)
+    private val lastCameraTimestampNs = AtomicLong(0)
+    private val avgCameraFrameIntervalUs = AtomicLong(0)
+    private val rateLimitSkipCount = AtomicLong(0)
     private var lastReportMs = 0L
     private var lastReportCount = 0L
+    private var lastCameraReportCount = 0L
 
     companion object {
         const val ACTION_START = "com.anomaly.camstream.START"
@@ -145,9 +155,16 @@ class StreamService : LifecycleService() {
                     serviceActive.set(true)
                     StreamStats.state.set("Iniciando cámara")
                     StreamStats.reset()
+                    StreamStats.addLog("Servicio iniciado: ${fps}fps, calidad $quality, bitrate ${bitrateRef.get() / 1000}kbps")
                     captureCount.set(0)
+                    cameraFrameCount.set(0)
+                    lastCameraTimestampNs.set(0)
+                    avgCameraFrameIntervalUs.set(0)
+                    nextProcessTimestampNs.set(0)
+                    rateLimitSkipCount.set(0)
                     lastReportMs = 0L
                     lastReportCount = 0L
+                    lastCameraReportCount = 0L
                     startStreaming(fps, facingBack)
                 }
             }
@@ -184,11 +201,13 @@ class StreamService : LifecycleService() {
                         Log.e(TAG, "Failed to obtain camera provider: ${e.message}", e)
                         StreamStats.lastError.set("provider: ${e.message}")
                         StreamStats.state.set("Error: ${e.message}")
+                        StreamStats.addLog("No se pudo abrir CameraX: ${e.message}")
                     }
                 }, ContextCompat.getMainExecutor(this@StreamService))
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start camera: ${e.message}", e)
                 StreamStats.lastError.set("start: ${e.message}")
+                StreamStats.addLog("No se pudo iniciar la cámara: ${e.message}")
             }
         }
     }
@@ -207,6 +226,7 @@ class StreamService : LifecycleService() {
         uploader?.shutdown()
         uploader = null
         StreamStats.state.set("Detenido")
+        StreamStats.addLog("Servicio de cámara detenido")
     }
 
     private fun bindUseCases(provider: ProcessCameraProvider, fps: Int, facingBack: Boolean) {
@@ -217,6 +237,9 @@ class StreamService : LifecycleService() {
         val height = 720
 
         val resolutionSelector = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(
+                AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
+            )
             .setResolutionStrategy(
                 ResolutionStrategy(
                     Size(width, height),
@@ -230,7 +253,7 @@ class StreamService : LifecycleService() {
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
             .setResolutionSelector(resolutionSelector)
 
-        applyFpsRange(analysisBuilder, fps)
+        applyFpsRange(analysisBuilder, fps, provider, facingBack)
 
         val analysis = analysisBuilder.build().also { ia ->
             ia.setAnalyzer(analysisExecutor) { imageProxy ->
@@ -250,15 +273,40 @@ class StreamService : LifecycleService() {
         }
     }
 
-    private fun applyFpsRange(builder: ImageAnalysis.Builder, fps: Int) {
+    private fun applyFpsRange(
+        builder: ImageAnalysis.Builder,
+        fps: Int,
+        provider: ProcessCameraProvider,
+        facingBack: Boolean
+    ) {
         try {
-            val fpsRange = AndroidRange(fps, fps)
+            val lensFacing = if (facingBack) CameraSelector.LENS_FACING_BACK else CameraSelector.LENS_FACING_FRONT
+            val cameraInfo = provider.availableCameraInfos.firstOrNull { it.lensFacing == lensFacing }
+            val ranges = cameraInfo?.let { info ->
+                val cameraId = Camera2CameraInfo.from(info).cameraId
+                getSystemService(CameraManager::class.java)
+                    .getCameraCharacteristics(cameraId)
+                    .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                    ?.toList()
+            }.orEmpty()
+            val fpsRange = ranges
+                .filter { fps in it.lower..it.upper }
+                .minByOrNull { it.upper - it.lower }
+                ?: ranges.minByOrNull { range ->
+                    val distance = when {
+                        fps < range.lower -> range.lower - fps
+                        fps > range.upper -> fps - range.upper
+                        else -> 0
+                    }
+                    distance * 1000 + range.upper - range.lower
+                }
+                ?: AndroidRange(fps, fps)
             Camera2Interop.Extender(builder)
                 .setCaptureRequestOption(
                     android.hardware.camera2.CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
                     fpsRange
                 )
-            Log.i(TAG, "Camera2 FPS range set to $fps")
+            Log.i(TAG, "Camera2 FPS target=$fps range=$fpsRange")
         } catch (e: Exception) {
             Log.w(TAG, "Camera2Interop failed, skipping FPS control: ${e.message}")
         }
@@ -270,14 +318,22 @@ class StreamService : LifecycleService() {
             return
         }
         try {
+            val cameraTimestampNs = image.imageInfo.timestamp
+            val previousCameraTimestampNs = lastCameraTimestampNs.getAndSet(cameraTimestampNs)
+            cameraFrameCount.incrementAndGet()
+            if (previousCameraTimestampNs > 0 && cameraTimestampNs > previousCameraTimestampNs) {
+                val intervalUs = (cameraTimestampNs - previousCameraTimestampNs) / 1_000L
+                avgCameraFrameIntervalUs.updateAndGet { previous ->
+                    if (previous == 0L) intervalUs else (previous * 7 + intervalUs) / 8
+                }
+            }
             val now = SystemClock.elapsedRealtime()
             val fps = targetFpsRef.get().coerceAtLeast(1)
-            val intervalMs = 1000L / fps
-            if (now - lastProcessMs.get() < intervalMs) {
+            if (!shouldProcessCameraFrame(cameraTimestampNs, fps)) {
+                rateLimitSkipCount.incrementAndGet()
                 image.close()
                 return
             }
-            lastProcessMs.set(now)
 
             captureCount.incrementAndGet()
             updateStats(now)
@@ -298,19 +354,46 @@ class StreamService : LifecycleService() {
                 encoder.start()
                 h264Encoder = encoder
                 StreamStats.state.set("Transmitiendo @${fps}fps ${image.width}x${image.height} H264")
+                StreamStats.addLog(
+                    "CameraX ${image.width}x${image.height} rot=${image.imageInfo.rotationDegrees}° " +
+                        "strideY/U/V=${yRowStride}/${uRowStride}/${vRowStride} " +
+                        "pixelUV=${image.planes[1].pixelStride}/${image.planes[2].pixelStride}; " +
+                        encoder.configurationSummary()
+                )
             }
 
-            h264Encoder?.encodeFrame(
-                yPlane, uPlane, vPlane,
-                yRowStride, uRowStride, vRowStride,
-                image.planes[1].pixelStride, image.planes[2].pixelStride
-            )
+            val encodeStartNs = SystemClock.elapsedRealtimeNanos()
+            try {
+                h264Encoder?.encodeFrame(
+                    yPlane, uPlane, vPlane,
+                    yRowStride, uRowStride, vRowStride,
+                    image.planes[1].pixelStride, image.planes[2].pixelStride
+                )
+            } finally {
+                lastEncodeTimeUs.set((SystemClock.elapsedRealtimeNanos() - encodeStartNs) / 1_000L)
+            }
             h264Encoder?.getError()?.let { StreamStats.lastError.set("codificador: $it") }
         } catch (e: Exception) {
             Log.w(TAG, "Frame error: ${e.message}")
             StreamStats.lastError.set("frame: ${e.message}")
+            StreamStats.addLog("Error procesando cuadro: ${e.message}")
         } finally {
             try { image.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun shouldProcessCameraFrame(timestampNs: Long, fps: Int): Boolean {
+        val intervalNs = 1_000_000_000L / fps
+        while (true) {
+            val nextTimestamp = nextProcessTimestampNs.get()
+            if (nextTimestamp == 0L) {
+                if (nextProcessTimestampNs.compareAndSet(0L, timestampNs + intervalNs)) return true
+                continue
+            }
+            if (timestampNs < nextTimestamp) return false
+            val intervalsToAdvance = (timestampNs - nextTimestamp) / intervalNs + 1L
+            val updatedNextTimestamp = nextTimestamp + intervalsToAdvance * intervalNs
+            if (nextProcessTimestampNs.compareAndSet(nextTimestamp, updatedNextTimestamp)) return true
         }
     }
 
@@ -324,13 +407,22 @@ class StreamService : LifecycleService() {
         if (elapsed >= 3000) {
             val delta = captureCount.get() - lastReportCount
             val actualFps = delta.toDouble() * 1000.0 / elapsed
-            val msg = "capt ${"%.1f".format(actualFps)} fps | NAL=${nalCount.get()} err=${StreamStats.dropCount.get()}"
+            val cameraDelta = cameraFrameCount.get() - lastCameraReportCount
+            val cameraFps = cameraDelta.toDouble() * 1000.0 / elapsed
+            val gateSkipped = rateLimitSkipCount.getAndSet(0)
+            val msg = "sensor=${"%.1f".format(cameraFps)}fps gap=${avgCameraFrameIntervalUs.get() / 1000.0}ms " +
+                "gateSkip=$gateSkipped " +
+                "capt ${"%.1f".format(actualFps)} fps | enc=${lastEncodeTimeUs.get() / 1000.0}ms " +
+                "${h264Encoder?.timingSummary() ?: ""} | " +
+                "${uploader?.statsSummary() ?: "up —"} | NAL=${nalCount.get()} drop=${StreamStats.dropCount.get()}"
             Log.i(TAG, msg)
             StreamStats.lastFps.set(msg)
+            StreamStats.addLog(msg)
             StreamStats.captureCount.set(captureCount.get())
             StreamStats.dropCount.set(0)
             lastReportMs = nowMs
             lastReportCount = captureCount.get()
+            lastCameraReportCount = cameraFrameCount.get()
         }
     }
 

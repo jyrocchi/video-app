@@ -35,6 +35,9 @@ let latestFrameBuffer = null;
 let latestBgraBuffer = null;
 let latestBgraWidth = 0;
 let latestBgraHeight = 0;
+let rendererFramePending = false;
+let rendererFrameDirty = false;
+let rendererFrameSentAt = null;
 const sseClients = new Set();
 let recordingProc = null;
 let recordingPath = null;
@@ -46,6 +49,28 @@ let ndiEnabled = false;
 let ndiSender = null;
 let ndiInitError = null;
 let h264Decoder = null;
+const h264IngressStats = {
+  requests: 0,
+  bytes: 0,
+  nals: 0,
+  active: false,
+  avgReadMs: 0,
+  avgPushMs: 0,
+  avgChunkGapMs: 0
+};
+const pcOutputStats = {
+  frames: 0,
+  avgCallbackMs: 0,
+  avgNdiMs: 0,
+  avgVirtualCamMs: 0,
+  avgJpegMs: 0,
+  avgPublishMs: 0,
+  avgRendererAckMs: 0
+};
+
+function updateAverage(previous, sample) {
+  return previous === 0 ? sample : previous * 0.8 + sample * 0.2;
+}
 
 function getLocalIPs() {
   const ifaces = os.networkInterfaces();
@@ -109,7 +134,32 @@ function publishJpeg(body) {
   latestFrameTime = Date.now();
   broadcastFrame(latestFrameB64);
   updateFps();
-  notifyRenderer({ type: 'frame', b64: latestFrameB64, size: body.length });
+  publishRendererFrame();
+}
+
+function publishRendererFrame() {
+  if (!mainWindow || mainWindow.isDestroyed() || !latestFrameB64) return;
+  if (rendererFramePending) {
+    rendererFrameDirty = true;
+    return;
+  }
+  rendererFramePending = true;
+  rendererFrameDirty = false;
+  rendererFrameSentAt = process.hrtime.bigint();
+  mainWindow.webContents.send('event', {
+    type: 'frame', b64: latestFrameB64,
+    size: latestFrameBuffer?.length || 0
+  });
+}
+
+function onRendererFrameRendered() {
+  if (rendererFramePending && rendererFrameSentAt !== null) {
+    pcOutputStats.avgRendererAckMs = updateAverage(pcOutputStats.avgRendererAckMs,
+      Number(process.hrtime.bigint() - rendererFrameSentAt) / 1e6);
+  }
+  rendererFramePending = false;
+  rendererFrameSentAt = null;
+  if (rendererFrameDirty) publishRendererFrame();
 }
 
 function notifyRenderer(payload) {
@@ -211,6 +261,7 @@ function createHttpServer() {
     }
 
     if (url === '/upload-h264' && req.method === 'POST') {
+      const requestStartedAt = process.hrtime.bigint();
       const chunks = [];
       let total = 0;
       const limit = 4 * 1024 * 1024;
@@ -221,14 +272,90 @@ function createHttpServer() {
       });
       req.on('end', () => {
         const body = Buffer.concat(chunks);
+        const bodyReadMs = Number(process.hrtime.bigint() - requestStartedAt) / 1e6;
+        const pushStartedAt = process.hrtime.bigint();
         if (h264Decoder && h264Decoder.ffmpegReady) {
-          h264Decoder.pushH264(body);
+          const accepted = h264Decoder.pushH264(body);
+          const pushMs = Number(process.hrtime.bigint() - pushStartedAt) / 1e6;
+          h264IngressStats.requests++;
+          h264IngressStats.bytes += body.length;
+          h264IngressStats.avgReadMs = updateAverage(h264IngressStats.avgReadMs, bodyReadMs);
+          h264IngressStats.avgPushMs = updateAverage(h264IngressStats.avgPushMs, pushMs);
+          if (!accepted) h264IngressStats.backpressure = (h264IngressStats.backpressure || 0) + 1;
           res.writeHead(200, { 'Content-Type': 'text/plain' });
           res.end('ok');
         } else {
           res.writeHead(503, { 'Content-Type': 'text/plain' });
           res.end(h264Decoder?.lastError || 'Decodificador H264 no disponible');
         }
+      });
+      return;
+    }
+
+    if (url === '/stream-h264' && req.method === 'POST') {
+      if (h264IngressStats.active || !h264Decoder?.ffmpegReady) {
+        res.writeHead(h264IngressStats.active ? 409 : 503);
+        res.end('Stream unavailable');
+        req.resume();
+        return;
+      }
+      h264IngressStats.active = true;
+      h264IngressStats.requests++;
+      req.setTimeout(0);
+      let pending = Buffer.alloc(0);
+      let awaitingDrain = false;
+      let lastChunkAt = null;
+      const onDrain = () => {
+        awaitingDrain = false;
+        req.resume();
+      };
+      const cleanup = () => {
+        h264IngressStats.active = false;
+        h264Decoder?.proc?.stdin?.removeListener('drain', onDrain);
+      };
+      req.on('close', cleanup);
+      req.on('error', err => {
+        console.warn('H264 stream connection lost:', err.message);
+        cleanup();
+      });
+      req.on('data', chunk => {
+        const now = process.hrtime.bigint();
+        if (lastChunkAt !== null) {
+          h264IngressStats.avgChunkGapMs = updateAverage(h264IngressStats.avgChunkGapMs,
+            Number(now - lastChunkAt) / 1e6);
+        }
+        lastChunkAt = now;
+        pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+        while (pending.length >= 4) {
+          const size = pending.readUInt32BE(0);
+          if (!size || size > 4 * 1024 * 1024) {
+            req.destroy(new Error('Invalid H264 NAL length'));
+            return;
+          }
+          if (pending.length < size + 4) break;
+          const nal = pending.subarray(4, 4 + size);
+          pending = pending.subarray(4 + size);
+          if (!h264Decoder?.ffmpegReady) {
+            req.destroy(new Error('H264 decoder unavailable'));
+            return;
+          }
+          h264IngressStats.bytes += size;
+          h264IngressStats.nals++;
+          const pushStartedAt = process.hrtime.bigint();
+          const accepted = h264Decoder.pushH264(nal);
+          h264IngressStats.avgPushMs = updateAverage(h264IngressStats.avgPushMs,
+            Number(process.hrtime.bigint() - pushStartedAt) / 1e6);
+          if (!accepted && !awaitingDrain) {
+            awaitingDrain = true;
+            h264IngressStats.backpressure = (h264IngressStats.backpressure || 0) + 1;
+            req.pause();
+            h264Decoder.proc.stdin.once('drain', onDrain);
+          }
+        }
+      });
+      req.on('end', () => {
+        if (pending.length) { res.writeHead(400); res.end('Truncated NAL'); }
+        else { res.writeHead(200); res.end('ok'); }
       });
       return;
     }
@@ -264,6 +391,27 @@ function createHttpServer() {
         clients: sseClients.size,
         recording: !!recordingProc,
         fps: currentFps,
+        h264: {
+          streamingSupported: true,
+          requests: h264IngressStats.requests,
+          bytes: h264IngressStats.bytes,
+          nals: h264IngressStats.nals,
+          active: h264IngressStats.active,
+          avgReadMs: Number(h264IngressStats.avgReadMs.toFixed(1)),
+          avgChunkGapMs: Number(h264IngressStats.avgChunkGapMs.toFixed(1)),
+          avgPushMs: Number(h264IngressStats.avgPushMs.toFixed(2)),
+          backpressure: h264IngressStats.backpressure || 0,
+          decoder: h264Decoder?.getStats() || null,
+          output: {
+            frames: pcOutputStats.frames,
+            callbackMs: Number(pcOutputStats.avgCallbackMs.toFixed(1)),
+            ndiMs: Number(pcOutputStats.avgNdiMs.toFixed(1)),
+            virtualCamMs: Number(pcOutputStats.avgVirtualCamMs.toFixed(1)),
+            jpegMs: Number(pcOutputStats.avgJpegMs.toFixed(1)),
+            publishMs: Number(pcOutputStats.avgPublishMs.toFixed(1)),
+            rendererAckMs: Number(pcOutputStats.avgRendererAckMs.toFixed(1))
+          }
+        },
         ndi: ndiEnabled,
         ndiError: ndiInitError
       }));
@@ -287,7 +435,8 @@ function createHttpServer() {
 
   httpServer.keepAliveTimeout = 30000;
   httpServer.headersTimeout = 31000;
-  httpServer.requestTimeout = 30000;
+  // Live chunked H.264 POSTs stay open for the entire transmission.
+  httpServer.requestTimeout = 0;
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`HTTP server on http://localhost:${PORT}`);
   });
@@ -310,7 +459,17 @@ function createWindow() {
   });
 
   mainWindow.loadFile('viewer.html');
-  mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.webContents.on('did-finish-load', () => {
+    rendererFramePending = false;
+    rendererFrameDirty = false;
+    publishRendererFrame();
+  });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    rendererFramePending = false;
+    rendererFrameDirty = false;
+    rendererFrameSentAt = null;
+  });
 }
 
 function startRecording(outputPath, fps) {
@@ -365,22 +524,30 @@ function stopRecording() {
 function startDecoder() {
   h264Decoder = new H264Decoder();
   h264Decoder.onFrame = (bgraBuf, width, height, ts) => {
+    const callbackStart = process.hrtime.bigint();
+    let stageStart = process.hrtime.bigint();
     if (ndiEnabled && ndiSender) {
       try { ndiSender.sendBgra(bgraBuf, width, height); } catch (e) {
         console.warn('NDI frame error:', e.message);
       }
     }
+    pcOutputStats.avgNdiMs = updateAverage(pcOutputStats.avgNdiMs,
+      Number(process.hrtime.bigint() - stageStart) / 1e6);
+    stageStart = process.hrtime.bigint();
     if (virtualCamWriter) {
       try { virtualCamWriter.writeBgra(bgraBuf, width, height); } catch (e) {
         console.warn('VirtualCam frame error:', e.message);
       }
     }
+    pcOutputStats.avgVirtualCamMs = updateAverage(pcOutputStats.avgVirtualCamMs,
+      Number(process.hrtime.bigint() - stageStart) / 1e6);
     latestBgraBuffer = bgraBuf;
     latestBgraWidth = width;
     latestBgraHeight = height;
     latestFrameTime = ts;
 
     // The desktop viewer, SSE clients and recorder all consume JPEG frames.
+    stageStart = process.hrtime.bigint();
     const rgba = Buffer.from(bgraBuf);
     for (let i = 0; i < rgba.length; i += 4) {
       const blue = rgba[i];
@@ -388,10 +555,18 @@ function startDecoder() {
       rgba[i + 2] = blue;
     }
     const frame = jpeg.encode({ data: rgba, width, height }, 65).data;
+    pcOutputStats.avgJpegMs = updateAverage(pcOutputStats.avgJpegMs,
+      Number(process.hrtime.bigint() - stageStart) / 1e6);
+    stageStart = process.hrtime.bigint();
     publishJpeg(frame);
+    pcOutputStats.avgPublishMs = updateAverage(pcOutputStats.avgPublishMs,
+      Number(process.hrtime.bigint() - stageStart) / 1e6);
     if (recordingProc) {
       try { recordingProc.stdin.write(frame); } catch (_) {}
     }
+    pcOutputStats.frames++;
+    pcOutputStats.avgCallbackMs = updateAverage(pcOutputStats.avgCallbackMs,
+      Number(process.hrtime.bigint() - callbackStart) / 1e6);
   };
   if (!h264Decoder.start()) {
     console.error('H264 decoder unavailable:', h264Decoder.lastError);
@@ -426,6 +601,7 @@ ipcMain.handle('start-recording', async (_event, { fps }) => {
 });
 
 ipcMain.handle('stop-recording', () => stopRecording());
+ipcMain.on('frame-rendered', onRendererFrameRendered);
 
 ipcMain.handle('get-info', () => ({
   port: PORT,

@@ -19,7 +19,19 @@ class H264Encoder(
     private val encoder: MediaCodec
     private val colorFormat: Int
     private val bufferInfo = MediaCodec.BufferInfo()
-    private var started = false
+    @Volatile private var started = false
+    @Volatile private var drainThread: Thread? = null
+    private val yRow = ByteArray(width)
+    private val uRow = ByteArray(width / 2)
+    private val vRow = ByteArray(width / 2)
+    private val uvRow = ByteArray(width)
+    private val inputStarveCount = java.util.concurrent.atomic.AtomicLong(0)
+    @Volatile var lastInputWaitUs: Long = 0
+        private set
+    @Volatile var lastYuvCopyUs: Long = 0
+        private set
+    @Volatile var lastSubmitUs: Long = 0
+        private set
 
     var onEncodedNAL: ((ByteArray, Int, Int) -> Unit)? = null
 
@@ -28,10 +40,10 @@ class H264Encoder(
         encoder = MediaCodec.createEncoderByType(mime)
         val supported = encoder.codecInfo.getCapabilitiesForType(mime).colorFormats
         colorFormat = when {
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar in supported ->
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
             MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar in supported ->
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar in supported ->
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
             else -> throw IllegalStateException("Codificador AVC sin formato YUV420 compatible")
         }
         val format = MediaFormat.createVideoFormat(mime, width, height).apply {
@@ -39,6 +51,7 @@ class H264Encoder(
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameIntervalSec)
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
             setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
             setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
         }
@@ -49,6 +62,12 @@ class H264Encoder(
         if (started) return
         encoder.start()
         started = true
+        drainThread = Thread({
+            while (started && !stopped) drainEncoder(false)
+        }, "H264OutputDrain").apply {
+            priority = Thread.NORM_PRIORITY
+            start()
+        }
         Log.i(TAG, "H264 encoder started: ${width}x${height}@${fps}fps ${bitrate/1000}kbps")
     }
 
@@ -57,9 +76,11 @@ class H264Encoder(
                      uPixelStride: Int, vPixelStride: Int) {
         if (!started || stopped) return
         try {
-            val inputIdx = encoder.dequeueInputBuffer(TIMEOUT_US)
+            val inputWaitStartNs = System.nanoTime()
+            val inputIdx = encoder.dequeueInputBuffer(0)
+            lastInputWaitUs = (System.nanoTime() - inputWaitStartNs) / 1_000L
             if (inputIdx < 0) {
-                Log.d(TAG, "dequeueInputBuffer returned $inputIdx (try-again-later)")
+                inputStarveCount.incrementAndGet()
                 return
             }
             val inputBuf = encoder.getInputBuffer(inputIdx) ?: return
@@ -73,45 +94,80 @@ class H264Encoder(
             inputBuf.position(0)
             inputBuf.limit(totalSize)
 
-            val yRow = ByteArray(width)
-            val uRow = ByteArray(uvWidth)
-            val vRow = ByteArray(uvWidth)
-
-            for (row in 0 until height) {
-                yPlane.position(row * yRowStride)
-                yPlane.get(yRow, 0, width)
-                inputBuf.put(yRow, 0, width)
+            val copyStartNs = System.nanoTime()
+            val ySource = yPlane.duplicate()
+            val yBase = ySource.position()
+            if (yRowStride == width) {
+                ySource.limit(yBase + ySize)
+                inputBuf.put(ySource)
+            } else {
+                for (row in 0 until height) {
+                    ySource.position(yBase + row * yRowStride)
+                    ySource.get(yRow, 0, width)
+                    inputBuf.put(yRow, 0, width)
+                }
             }
 
             // CameraX chroma may have pixelStride=2. Pack U/V according to the
             // actual format supported by this device's hardware encoder.
             if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
-                for (row in 0 until uvHeight) {
-                    val start = row * uRowStride
-                    for (col in 0 until uvWidth) uRow[col] = uPlane.get(start + col * uPixelStride)
-                    inputBuf.put(uRow)
-                }
-                for (row in 0 until uvHeight) {
-                    val start = row * vRowStride
-                    for (col in 0 until uvWidth) vRow[col] = vPlane.get(start + col * vPixelStride)
-                    inputBuf.put(vRow)
-                }
+                copyPlanarPlane(inputBuf, uPlane, uRowStride, uPixelStride, uRow, uvWidth, uvHeight)
+                copyPlanarPlane(inputBuf, vPlane, vRowStride, vPixelStride, vRow, uvWidth, uvHeight)
             } else {
+                val uBase = uPlane.position()
+                val vBase = vPlane.position()
                 for (row in 0 until uvHeight) {
-                    val uStart = row * uRowStride
-                    val vStart = row * vRowStride
-                    for (col in 0 until uvWidth) {
-                        inputBuf.put(uPlane.get(uStart + col * uPixelStride))
-                        inputBuf.put(vPlane.get(vStart + col * vPixelStride))
+                    val uStart = uBase + row * uRowStride
+                    val vStart = vBase + row * vRowStride
+                    // Common CameraX layout is NV12: U and V views of the same
+                    // interleaved chroma. Copy the contiguous bytes in one go.
+                    val interleaved = uPixelStride == 2 && vPixelStride == 2 &&
+                        uPlane.get(uStart + 1) == vPlane.get(vStart) &&
+                        uPlane.get(uStart + uvWidth - 1) == vPlane.get(vStart + uvWidth - 2)
+                    if (interleaved) {
+                        val source = uPlane.duplicate()
+                        source.position(uStart)
+                        source.limit(uStart + width - 1)
+                        inputBuf.put(source)
+                        inputBuf.put(vPlane.get(vStart + width - 2))
+                    } else {
+                        for (col in 0 until uvWidth) {
+                            uvRow[col * 2] = uPlane.get(uStart + col * uPixelStride)
+                            uvRow[col * 2 + 1] = vPlane.get(vStart + col * vPixelStride)
+                        }
+                        inputBuf.put(uvRow, 0, width)
                     }
                 }
             }
+            lastYuvCopyUs = (System.nanoTime() - copyStartNs) / 1_000L
 
+            val submitStartNs = System.nanoTime()
             encoder.queueInputBuffer(inputIdx, 0, totalSize, computePts(), 0)
-            drainEncoder(false)
+            lastSubmitUs = (System.nanoTime() - submitStartNs) / 1_000L
         } catch (e: Exception) {
             Log.w(TAG, "encodeFrame error: ${e.message ?: e.javaClass.simpleName}", e)
             codecError = e.message ?: e.javaClass.simpleName
+        }
+    }
+
+    private fun copyPlanarPlane(output: ByteBuffer, plane: ByteBuffer, rowStride: Int,
+                                pixelStride: Int, rowBytes: ByteArray, width: Int, height: Int) {
+        val source = plane.duplicate()
+        val base = source.position()
+        if (pixelStride == 1 && rowStride == width) {
+            source.limit(base + width * height)
+            output.put(source)
+        } else {
+            for (row in 0 until height) {
+                val start = base + row * rowStride
+                if (pixelStride == 1) {
+                    source.position(start)
+                    source.get(rowBytes, 0, width)
+                } else {
+                    for (col in 0 until width) rowBytes[col] = source.get(start + col * pixelStride)
+                }
+                output.put(rowBytes, 0, width)
+            }
         }
     }
 
@@ -123,7 +179,8 @@ class H264Encoder(
 
     private fun drainEncoder(endOfStream: Boolean) {
         while (true) {
-            val outIdx = try { encoder.dequeueOutputBuffer(bufferInfo, TIMEOUT_US) }
+            val timeoutUs = if (endOfStream) EOS_TIMEOUT_US else OUTPUT_TIMEOUT_US
+            val outIdx = try { encoder.dequeueOutputBuffer(bufferInfo, timeoutUs) }
                        catch (e: Exception) { Log.w(TAG, "dequeueOutput err: ${e.message}"); return }
             if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (!endOfStream) return
@@ -270,6 +327,10 @@ class H264Encoder(
     fun stop() {
         if (stopped) return
         stopped = true
+        try { drainThread?.join(DRAIN_STOP_TIMEOUT_MS) } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        drainThread = null
         try {
             if (started) {
                 encoder.stop()
@@ -283,8 +344,17 @@ class H264Encoder(
 
     fun getError(): String? = codecError
 
+    fun configurationSummary(): String =
+        "codec=${encoder.codecInfo.name} color=$colorFormat bitrate=${bitrate / 1000}kbps"
+
+    fun timingSummary(): String =
+        "in=${lastInputWaitUs}us yuv=${lastYuvCopyUs / 1000.0}ms submit=${lastSubmitUs}us " +
+            "inputStarve=${inputStarveCount.get()}"
+
     companion object {
         private const val TAG = "H264Encoder"
-        private const val TIMEOUT_US = 10_000L
+        private const val OUTPUT_TIMEOUT_US = 10_000L
+        private const val EOS_TIMEOUT_US = 10_000L
+        private const val DRAIN_STOP_TIMEOUT_MS = 100L
     }
 }
