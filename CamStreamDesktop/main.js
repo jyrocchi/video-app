@@ -26,6 +26,7 @@ const { H264Decoder } = require('./h264-decoder.js');
 
 const PORT = Number(process.env.CAMSTREAM_PORT) || 8080;
 const VIRTUAL_CAM_CLSID = '{B4E5B3A0-1B0C-4F8E-9D4D-8C5E7F3A2B1D}';
+const FRAME_TIMEOUT_MS = 5000;
 
 let mainWindow = null;
 let httpServer = null;
@@ -137,6 +138,19 @@ function publishJpeg(body) {
   publishRendererFrame();
 }
 
+function clearPublishedFrame() {
+  latestFrameB64 = null;
+  latestFrameBuffer = null;
+  latestFrameTime = 0;
+  latestBgraBuffer = null;
+  latestBgraWidth = 0;
+  latestBgraHeight = 0;
+  frameCount = 0;
+  currentFps = 0;
+  fpsCalcStart = Date.now();
+  notifyRenderer({ type: 'stream-disconnected' });
+}
+
 function publishRendererFrame() {
   if (!mainWindow || mainWindow.isDestroyed() || !latestFrameB64) return;
   if (rendererFramePending) {
@@ -209,6 +223,13 @@ function processFrameAsync(body) {
 }
 
 function createHttpServer() {
+  const frameTimeout = setInterval(() => {
+    if (latestFrameB64 && Date.now() - latestFrameTime >= FRAME_TIMEOUT_MS) {
+      clearPublishedFrame();
+    }
+  }, 500);
+  frameTimeout.unref();
+
   httpServer = http.createServer((req, res) => {
     const url = (req.url || '').split('?')[0];
 
@@ -386,7 +407,7 @@ function createHttpServer() {
     if (url === '/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        connected: !!latestFrameB64 && Date.now() - latestFrameTime < 5000,
+        connected: !!latestFrameB64 && Date.now() - latestFrameTime < FRAME_TIMEOUT_MS,
         lastFrameAge: latestFrameB64 ? Math.floor((Date.now() - latestFrameTime) / 1000) : null,
         clients: sseClients.size,
         recording: !!recordingProc,

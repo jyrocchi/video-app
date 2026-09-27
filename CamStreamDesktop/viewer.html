@@ -105,7 +105,7 @@ async function init() {
 
 window.api.onEvent((payload) => {
   if (payload.type === 'frame') {
-    if (!img.src) placeholder.style.display = 'none';
+    placeholder.style.display = 'none';
     img.src = 'data:image/jpeg;base64,' + payload.b64;
     img.style.display = 'block';
     connDot.classList.add('on');
@@ -113,6 +113,14 @@ window.api.onEvent((payload) => {
     sizeText.textContent = Math.round(payload.size / 1024) + ' KB';
   } else if (payload.type === 'fps') {
     fpsText.textContent = payload.value + ' fps';
+  } else if (payload.type === 'stream-disconnected') {
+    img.removeAttribute('src');
+    img.style.display = 'none';
+    placeholder.style.display = 'flex';
+    connDot.classList.remove('on');
+    connText.textContent = 'Sin señal';
+    fpsText.textContent = '-- fps';
+    sizeText.textContent = '-- KB';
   } else if (payload.type === 'recording-started') {
     recording = true;
     recordingStart = Date.now();
