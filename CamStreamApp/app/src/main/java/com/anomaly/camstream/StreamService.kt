@@ -45,9 +45,14 @@ class StreamService : LifecycleService() {
     private var uploader: FrameUploader? = null
     private var streamJob: Job? = null
     private var h264Encoder: H264Encoder? = null
+    private var encoderSourceWidth = 0
+    private var encoderSourceHeight = 0
+    private var encoderOutputWidth = 0
+    private var encoderOutputHeight = 0
 
     private val mirrorRef = AtomicBoolean(false)
     private val rotationRef = AtomicInteger(0)
+    private val facingBackRef = AtomicBoolean(true)
     private val targetFpsRef = AtomicInteger(15)
     private val bitrateRef = AtomicInteger(2_500_000)
     private val serviceActive = AtomicBoolean(false)
@@ -97,11 +102,12 @@ class StreamService : LifecycleService() {
             ctx.startService(Intent(ctx, StreamService::class.java).apply { action = ACTION_STOP })
         }
 
-        fun updateTransform(ctx: Context, rotation: Int, mirror: Boolean) {
+        fun updateTransform(ctx: Context, rotation: Int, mirror: Boolean, facingBack: Boolean) {
             ctx.startService(Intent(ctx, StreamService::class.java).apply {
                 action = ACTION_UPDATE_TRANSFORM
                 putExtra(EXTRA_ROTATION, rotation)
                 putExtra(EXTRA_MIRROR, mirror)
+                putExtra(EXTRA_FACING_BACK, facingBack)
             })
         }
     }
@@ -127,6 +133,13 @@ class StreamService : LifecycleService() {
                 ACTION_UPDATE_TRANSFORM -> {
                     rotationRef.set(intent.getIntExtra(EXTRA_ROTATION, 0))
                     mirrorRef.set(intent.getBooleanExtra(EXTRA_MIRROR, false))
+                    val facingBack = intent.getBooleanExtra(EXTRA_FACING_BACK, facingBackRef.get())
+                    if (facingBackRef.getAndSet(facingBack) != facingBack) {
+                        cameraProvider?.let { provider ->
+                            provider.unbindAll()
+                            bindUseCases(provider, targetFpsRef.get(), facingBack)
+                        }
+                    }
                     Log.i(TAG, "Transform updated rot=${rotationRef.get()} mirror=${mirrorRef.get()}")
                 }
                 else -> {
@@ -149,6 +162,7 @@ class StreamService : LifecycleService() {
                     })
                     rotationRef.set(rotation)
                     mirrorRef.set(mirror)
+                    facingBackRef.set(facingBack)
 
                     startForeground(NOTIF_ID, buildNotification(),
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
@@ -344,8 +358,17 @@ class StreamService : LifecycleService() {
             val yRowStride = image.planes[0].rowStride
             val uRowStride = image.planes[1].rowStride
             val vRowStride = image.planes[2].rowStride
+            val rotation = ((rotationRef.get() % 360) + 360) % 360
+            val outputWidth = if (rotation == 90 || rotation == 270) image.height else image.width
+            val outputHeight = if (rotation == 90 || rotation == 270) image.width else image.height
+            if (h264Encoder != null && (encoderSourceWidth != image.width ||
+                    encoderSourceHeight != image.height || encoderOutputWidth != outputWidth ||
+                    encoderOutputHeight != outputHeight)) {
+                h264Encoder?.stop()
+                h264Encoder = null
+            }
             if (h264Encoder == null) {
-                val encoder = H264Encoder(image.width, image.height, fps, bitrateRef.get())
+                val encoder = H264Encoder(outputWidth, outputHeight, fps, bitrateRef.get())
                 encoder.onEncodedNAL = { data, offset, size ->
                     uploader?.uploadH264(if (offset == 0 && size == data.size) data
                         else data.copyOfRange(offset, offset + size))
@@ -353,6 +376,10 @@ class StreamService : LifecycleService() {
                 }
                 encoder.start()
                 h264Encoder = encoder
+                encoderSourceWidth = image.width
+                encoderSourceHeight = image.height
+                encoderOutputWidth = outputWidth
+                encoderOutputHeight = outputHeight
                 StreamStats.state.set("Transmitiendo @${fps}fps ${image.width}x${image.height} H264")
                 StreamStats.addLog(
                     "CameraX ${image.width}x${image.height} rot=${image.imageInfo.rotationDegrees}° " +
@@ -367,7 +394,8 @@ class StreamService : LifecycleService() {
                 h264Encoder?.encodeFrame(
                     yPlane, uPlane, vPlane,
                     yRowStride, uRowStride, vRowStride,
-                    image.planes[1].pixelStride, image.planes[2].pixelStride
+                    image.planes[1].pixelStride, image.planes[2].pixelStride,
+                    image.width, image.height, rotation, mirrorRef.get()
                 )
             } finally {
                 lastEncodeTimeUs.set((SystemClock.elapsedRealtimeNanos() - encodeStartNs) / 1_000L)

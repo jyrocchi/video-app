@@ -27,5 +27,4 @@
     <string name="action_stop">Detener</string>
     <string name="grant_permissions">Conceder permisos</string>
     <string name="on_air">EN VIVO</string>
-    <string name="stream_log_title">Registro de transmisión</string>
 </resources>

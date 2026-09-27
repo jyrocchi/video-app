@@ -33,7 +33,6 @@ class MainActivity : AppCompatActivity() {
     private var mirrorEnabled = false
     @Volatile private var lastConnectionState: Boolean? = null
     @Volatile private var lastPcLogAtMs = 0L
-    private var lastDisplayedLogs = ""
 
     private val qualityOptions = arrayOf("Baja (50)", "Media (70)", "Alta (85)")
     private val qualityValues = intArrayOf(50, 70, 85)
@@ -80,21 +79,25 @@ class MainActivity : AppCompatActivity() {
         binding.facingButton.setOnClickListener {
             facingBack = !facingBack
             binding.facingButton.setText(if (facingBack) R.string.facing_back else R.string.facing_front)
-            bindPreview()
+            if (streaming) {
+                StreamService.updateTransform(this, rotationStep, mirrorEnabled, facingBack)
+            } else {
+                bindPreview()
+            }
         }
         binding.rotateButton.setOnClickListener {
             rotationStep = (rotationStep + 90) % 360
             saveRotation(rotationStep)
             updateRotateLabel()
             applyPreviewTransform()
-            if (streaming) StreamService.updateTransform(this, rotationStep, mirrorEnabled)
+            if (streaming) StreamService.updateTransform(this, rotationStep, mirrorEnabled, facingBack)
         }
         binding.mirrorButton.setOnClickListener {
             mirrorEnabled = !mirrorEnabled
             saveMirror(mirrorEnabled)
             updateMirrorLabel()
             applyPreviewTransform()
-            if (streaming) StreamService.updateTransform(this, rotationStep, mirrorEnabled)
+            if (streaming) StreamService.updateTransform(this, rotationStep, mirrorEnabled, facingBack)
         }
 
         if (allPermissionsGranted()) {
@@ -186,7 +189,6 @@ class MainActivity : AppCompatActivity() {
             val fps = fpsValues[binding.fpsSpinner.selectedItemPosition]
             StreamStats.clearLog()
             StreamStats.addLog("Iniciando transmisión: objetivo ${fps}fps, calidad $quality")
-            lastDisplayedLogs = ""
             lastConnectionState = null
             lastPcLogAtMs = 0L
             streaming = true
@@ -218,10 +220,8 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             if (!streaming) {
                 binding.statsText.text = ""
-                binding.logPanel.visibility = android.view.View.GONE
                 return
             }
-            binding.logPanel.visibility = android.view.View.VISIBLE
             val state = StreamStats.state.get() ?: "—"
             val fps = StreamStats.lastFps.get() ?: "—"
             val err = StreamStats.lastError.get()
@@ -240,14 +240,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             binding.statsText.text = txt
-            val logs = StreamStats.getLogSnapshot().joinToString("\n")
-            if (logs != lastDisplayedLogs) {
-                lastDisplayedLogs = logs
-                binding.logText.text = logs
-                binding.logScroll.post {
-                    binding.logScroll.fullScroll(android.view.View.FOCUS_DOWN)
-                }
-            }
             statsHandler.postDelayed(this, 500)
         }
     }
@@ -259,7 +251,6 @@ class MainActivity : AppCompatActivity() {
     private fun stopStatsPolling() {
         statsHandler.removeCallbacks(statsRunnable)
         binding.statsText.text = ""
-        binding.logPanel.visibility = android.view.View.GONE
     }
 
     private suspend fun ping(base: String): Boolean = withContext(Dispatchers.IO) {

@@ -73,7 +73,9 @@ class H264Encoder(
 
     fun encodeFrame(yPlane: ByteBuffer, uPlane: ByteBuffer, vPlane: ByteBuffer,
                     yRowStride: Int, uRowStride: Int, vRowStride: Int,
-                     uPixelStride: Int, vPixelStride: Int) {
+                    uPixelStride: Int, vPixelStride: Int,
+                    sourceWidth: Int = width, sourceHeight: Int = height,
+                    rotation: Int = 0, mirror: Boolean = false) {
         if (!started || stopped) return
         try {
             val inputWaitStartNs = System.nanoTime()
@@ -95,47 +97,76 @@ class H264Encoder(
             inputBuf.limit(totalSize)
 
             val copyStartNs = System.nanoTime()
-            val ySource = yPlane.duplicate()
-            val yBase = ySource.position()
-            if (yRowStride == width) {
-                ySource.limit(yBase + ySize)
-                inputBuf.put(ySource)
-            } else {
-                for (row in 0 until height) {
-                    ySource.position(yBase + row * yRowStride)
-                    ySource.get(yRow, 0, width)
-                    inputBuf.put(yRow, 0, width)
-                }
-            }
-
-            // CameraX chroma may have pixelStride=2. Pack U/V according to the
-            // actual format supported by this device's hardware encoder.
-            if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
-                copyPlanarPlane(inputBuf, uPlane, uRowStride, uPixelStride, uRow, uvWidth, uvHeight)
-                copyPlanarPlane(inputBuf, vPlane, vRowStride, vPixelStride, vRow, uvWidth, uvHeight)
-            } else {
-                val uBase = uPlane.position()
-                val vBase = vPlane.position()
-                for (row in 0 until uvHeight) {
-                    val uStart = uBase + row * uRowStride
-                    val vStart = vBase + row * vRowStride
-                    // Common CameraX layout is NV12: U and V views of the same
-                    // interleaved chroma. Copy the contiguous bytes in one go.
-                    val interleaved = uPixelStride == 2 && vPixelStride == 2 &&
-                        uPlane.get(uStart + 1) == vPlane.get(vStart) &&
-                        uPlane.get(uStart + uvWidth - 1) == vPlane.get(vStart + uvWidth - 2)
-                    if (interleaved) {
-                        val source = uPlane.duplicate()
-                        source.position(uStart)
-                        source.limit(uStart + width - 1)
-                        inputBuf.put(source)
-                        inputBuf.put(vPlane.get(vStart + width - 2))
-                    } else {
+            val normalizedRotation = ((rotation % 360) + 360) % 360
+            if (normalizedRotation != 0 || mirror) {
+                copyTransformedPlane(inputBuf, yPlane, sourceWidth, sourceHeight,
+                    yRowStride, 1, width, height, normalizedRotation, mirror)
+                val chromaOutputStart = inputBuf.position()
+                val chromaWidth = sourceWidth / 2
+                val chromaHeight = sourceHeight / 2
+                if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
+                    copyTransformedPlane(inputBuf, uPlane, chromaWidth, chromaHeight,
+                        uRowStride, uPixelStride, uvWidth, uvHeight, normalizedRotation, mirror)
+                    copyTransformedPlane(inputBuf, vPlane, chromaWidth, chromaHeight,
+                        vRowStride, vPixelStride, uvWidth, uvHeight, normalizedRotation, mirror)
+                } else {
+                    val uBase = uPlane.position()
+                    val vBase = vPlane.position()
+                    for (row in 0 until uvHeight) {
                         for (col in 0 until uvWidth) {
-                            uvRow[col * 2] = uPlane.get(uStart + col * uPixelStride)
-                            uvRow[col * 2 + 1] = vPlane.get(vStart + col * vPixelStride)
+                            val source = sourceCoordinate(col, row, chromaWidth, chromaHeight,
+                                uvWidth, normalizedRotation, mirror)
+                            val sx = (source shr 32).toInt()
+                            val sy = source.toInt()
+                            inputBuf.put(uPlane.get(uBase + sy * uRowStride + sx * uPixelStride))
+                            inputBuf.put(vPlane.get(vBase + sy * vRowStride + sx * vPixelStride))
                         }
-                        inputBuf.put(uvRow, 0, width)
+                    }
+                }
+                check(inputBuf.position() - chromaOutputStart == 2 * uvWidth * uvHeight)
+            } else {
+                val ySource = yPlane.duplicate()
+                val yBase = ySource.position()
+                if (yRowStride == width) {
+                    ySource.limit(yBase + ySize)
+                    inputBuf.put(ySource)
+                } else {
+                    for (row in 0 until height) {
+                        ySource.position(yBase + row * yRowStride)
+                        ySource.get(yRow, 0, width)
+                        inputBuf.put(yRow, 0, width)
+                    }
+                }
+
+                // CameraX chroma may have pixelStride=2. Pack U/V according to the
+                // actual format supported by this device's hardware encoder.
+                if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
+                    copyPlanarPlane(inputBuf, uPlane, uRowStride, uPixelStride, uRow, uvWidth, uvHeight)
+                    copyPlanarPlane(inputBuf, vPlane, vRowStride, vPixelStride, vRow, uvWidth, uvHeight)
+                } else {
+                    val uBase = uPlane.position()
+                    val vBase = vPlane.position()
+                    for (row in 0 until uvHeight) {
+                        val uStart = uBase + row * uRowStride
+                        val vStart = vBase + row * vRowStride
+                        // Common CameraX layout is NV12: U and V views of the same
+                        // interleaved chroma. Copy the contiguous bytes in one go.
+                        val interleaved = uPixelStride == 2 && vPixelStride == 2 &&
+                            uPlane.get(uStart + 1) == vPlane.get(vStart) &&
+                            uPlane.get(uStart + uvWidth - 1) == vPlane.get(vStart + uvWidth - 2)
+                        if (interleaved) {
+                            val source = uPlane.duplicate()
+                            source.position(uStart)
+                            source.limit(uStart + width - 1)
+                            inputBuf.put(source)
+                            inputBuf.put(vPlane.get(vStart + width - 2))
+                        } else {
+                            for (col in 0 until uvWidth) {
+                                uvRow[col * 2] = uPlane.get(uStart + col * uPixelStride)
+                                uvRow[col * 2 + 1] = vPlane.get(vStart + col * vPixelStride)
+                            }
+                            inputBuf.put(uvRow, 0, width)
+                        }
                     }
                 }
             }
@@ -148,6 +179,52 @@ class H264Encoder(
             Log.w(TAG, "encodeFrame error: ${e.message ?: e.javaClass.simpleName}", e)
             codecError = e.message ?: e.javaClass.simpleName
         }
+    }
+
+    private fun copyTransformedPlane(
+        output: ByteBuffer,
+        plane: ByteBuffer,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        rowStride: Int,
+        pixelStride: Int,
+        outputWidth: Int,
+        outputHeight: Int,
+        rotation: Int,
+        mirror: Boolean
+    ) {
+        val base = plane.position()
+        for (row in 0 until outputHeight) {
+            for (col in 0 until outputWidth) {
+                val source = sourceCoordinate(
+                    col, row, sourceWidth, sourceHeight, outputWidth, rotation, mirror
+                )
+                val sourceX = (source shr 32).toInt()
+                val sourceY = source.toInt()
+                output.put(plane.get(base + sourceY * rowStride + sourceX * pixelStride))
+            }
+        }
+    }
+
+    private fun sourceCoordinate(
+        x: Int,
+        y: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        outputWidth: Int,
+        rotation: Int,
+        mirror: Boolean
+    ): Long {
+        val outputX = if (mirror) outputWidth - 1 - x else x
+        val sourceX: Int
+        val sourceY: Int
+        when (rotation) {
+            90 -> { sourceX = y; sourceY = sourceHeight - 1 - outputX }
+            180 -> { sourceX = sourceWidth - 1 - outputX; sourceY = sourceHeight - 1 - y }
+            270 -> { sourceX = sourceWidth - 1 - y; sourceY = outputX }
+            else -> { sourceX = outputX; sourceY = y }
+        }
+        return (sourceX.toLong() shl 32) or (sourceY.toLong() and 0xFFFFFFFFL)
     }
 
     private fun copyPlanarPlane(output: ByteBuffer, plane: ByteBuffer, rowStride: Int,
