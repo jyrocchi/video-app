@@ -25,3 +25,5 @@ Antes de iniciar otra copia, cierra la instancia anterior que escuche en el puer
 - `test/stream-integration.js`: prueba de recepción persistente y decodificación JPEG.
 
 La **captura Android** prioriza 1280×720; actualmente el decodificador y el filtro virtual entregan **640×480 RGB24** a los consumidores de la cámara virtual. Cambiar esa salida exige actualizar conjuntamente FFmpeg, la memoria compartida, la DLL y sus pruebas. Los binarios en `dist/` son locales e ignorados por Git: genera uno nuevo desde el commit actual o usa un [release](https://github.com/jyrocchi/video-app/releases) asociado al tag correspondiente.
+
+El ejecutable portable verificado, compilado desde `ba4a4be`, está en el [release `v1.0.0-delay-v1`](https://github.com/jyrocchi/video-app/releases/tag/v1.0.0-delay-v1). Tras limpiar `node_modules/` vuelve a ejecutar `npm ci` para desarrollar; tras limpiar `dist/` vuelve a generar el ejecutable con `npm run pack` o `npm run build`.

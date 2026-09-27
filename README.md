@@ -4,6 +4,10 @@
 
 `server.js`, `phone.html` y `viewer.html` en la raíz son un prototipo anterior basado en el navegador; no son el servidor ni el visor usados por la app Android vigente. No ejecutes `server.js` junto con CamStream Desktop: ambos utilizan el puerto 8080.
 
+## Versión verificada
+
+El [release **v1.0.0-delay-v1**](https://github.com/jyrocchi/video-app/releases/tag/v1.0.0-delay-v1) contiene `CamStreamDesktop-Portable-1.0.0.exe` (Windows x64) y `app-debug.apk` (Android; ID `com.anomaly.camstream.debug`). Ambos se construyeron y probaron desde el commit `ba4a4be` de las aplicaciones vigentes. La fuente más reciente para editar está en `main`; antes de considerar un binario de `dist/` como equivalente, comprueba el commit/tag desde el que se generó.
+
 ## Uso
 
 1. En Windows abre **CamStream Desktop** (el ejecutable del release vigente o `npm start` desde `CamStreamDesktop/`). Cierra otras instancias que ocupen el puerto 8080.
