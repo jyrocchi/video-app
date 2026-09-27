@@ -1,40 +1,42 @@
-# Cámara Remota (Celular → PC)
+# CamStream: celular Android → PC Windows
 
-Transmite la cámara de tu celular al PC por Wi-Fi, sin instalar apps.
+**Aplicación vigente:** `CamStreamApp/` (Android) transmite H.264 a `CamStreamDesktop/` (Electron). La aplicación de PC recibe el vídeo en el puerto 8080, lo muestra y puede enviarlo por NDI o a la cámara virtual DirectShow. Si vas a modificar o ejecutar el proyecto, comienza por esas dos carpetas y consulta `AGENTS.md`.
 
-## Archivos
-- `server.js` — servidor Node.js (sin dependencias)
-- `phone.html` — página que se abre en el celular
-- `viewer.html` — visor que se abre en el PC
-
-## Requisitos
-- Node.js 14+ (ya tienes v22)
-- Celular y PC en la **misma red Wi-Fi**
+`server.js`, `phone.html` y `viewer.html` en la raíz son un prototipo anterior basado en el navegador; no son el servidor ni el visor usados por la app Android vigente. No ejecutes `server.js` junto con CamStream Desktop: ambos utilizan el puerto 8080.
 
 ## Uso
 
-1. Ejecuta el servidor:
-   ```
-   node server.js
-   ```
-   Verás algo como:
-   ```
-   Visor (PC):    http://localhost:8080/
-   Celular:       http://192.168.1.50:8080/phone
-   ```
+1. En Windows abre **CamStream Desktop** (el ejecutable del release vigente o `npm start` desde `CamStreamDesktop/`). Cierra otras instancias que ocupen el puerto 8080.
+2. En el teléfono abre **CamStream**. Por Wi-Fi usa la URL `http://<IP-del-PC>:8080` que muestra la ventana. Por USB, ejecuta `C:\Android\platform-tools\adb.exe reverse tcp:8080 tcp:8080` y utiliza `http://127.0.0.1:8080` en el teléfono.
+3. Selecciona **Alta (85)** y **20 FPS** (valores iniciales), e inicia la transmisión. La captura prioriza 1280×720; el resultado real aparece en el registro de la app.
 
-2. En el **PC**, abre `http://localhost:8080/`
+La cámara virtual DirectShow instalada desde la ventana de escritorio utiliza actualmente una salida fija de 640×480. Es distinta de la resolución de captura Android; consulta `CamStreamDesktop/README.md` antes de cambiarla.
 
-3. En el **celular**, abre la URL `/phone` que muestra la consola, concede permiso de cámara y pulsa **Iniciar transmisión**.
+## Desarrollar y generar aplicaciones
 
-4. La imagen aparecerá en el visor del PC casi en tiempo real.
+Requisitos: Node.js y npm, JDK 17, Android SDK 34 y Gradle 8.5/Android Studio. En este equipo Gradle está en `C:\Android\gradle-8.5\bin\gradle.bat` y el SDK en `C:\Android`.
 
-## Controles en el celular
-- Selector de cámara (frontal/trasera)
-- Calidad: Baja / Media / Alta
-- FPS: 10 / 15 / 24 / 30
+```powershell
+# Desde CamStreamDesktop/
+npm ci
+npm test
+npm start
+npm run pack     # dist/win-unpacked/CamStreamDesktop.exe
+npm run build    # ejecutable portable en dist/
 
-## Notas
-- El navegador debe permitir acceso a la cámara (Chrome, Edge, Safari funcionan).
-- En iOS puede ser necesario usar **HTTPS** para acceder a la cámara; en Android funciona por HTTP local.
-- Si tu PC tiene firewall, permite el puerto 8080.
+# Desde CamStreamApp/
+& "C:\Android\gradle-8.5\bin\gradle.bat" :app:assembleDebug
+# app/build/outputs/apk/debug/app-debug.apk
+```
+
+`dist/`, `app/build/` y los APK ignorados por Git son **artefactos locales**, no la fuente de verdad. Un ejecutable antiguo en `dist/` puede tener código distinto del último commit: recompila o descarga los binarios asociados al tag del [release](https://github.com/jyrocchi/video-app/releases) antes de probar cambios.
+
+## Dónde modificar
+
+- `CamStreamApp/app/src/main/java/com/anomaly/camstream/StreamService.kt`: captura CameraX, resolución y FPS.
+- `H264Encoder.kt` y `FrameUploader.kt` en ese mismo directorio: codificación y transmisión H.264 persistente (`POST /stream-h264`).
+- `CamStreamDesktop/main.js` y `h264-decoder.js`: servidor, FFmpeg, salidas de vídeo y métricas.
+- `CamStreamDesktop/viewer.html`, `preload.js`, `styles.css`: interfaz Electron e IPC.
+- `CamStreamDesktop/virtual-cam/` y `virtual-cam-writer.js`: filtro DirectShow y memoria compartida.
+
+La referencia de diagnóstico y decisiones de latencia está en el ADR del proyecto `video-app` del MCP. Sigue el código y los commits como fuente de verdad para la implementación.

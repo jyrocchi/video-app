@@ -1,6 +1,6 @@
-# CamStream – App Android (Android 14)
+# CamStream – App Android
 
-Aplicación nativa Android que transmite la cámara del celular al servidor Node.js del proyecto anterior.
+Aplicación nativa Android vigente que transmite la cámara del celular a `CamStreamDesktop/` (Electron). El servidor `server.js` de la raíz pertenece al prototipo web anterior.
 
 ## Estructura
 
@@ -19,7 +19,7 @@ CamStreamApp/
         ├── java/com/anomaly/camstream/
         │   ├── MainActivity.kt     # Pantalla principal con preview y controles
         │   ├── StreamService.kt   # Foreground service con CameraX
-    │   └── FrameUploader.kt   # HTTP POST de H.264 al servidor
+        │   └── FrameUploader.kt   # H.264 por POST persistente a CamStream Desktop
         └── res/...
 ```
 
@@ -39,17 +39,18 @@ CamStreamApp/
 4. Pulsa **Run ▶** en Android Studio y elige tu dispositivo.
 5. La primera vez, Android Studio te pedirá instalar el SDK 34 si no lo tienes.
 
-### Generar APK firmado manualmente
+Para generar el APK de depuración en este equipo, desde `CamStreamApp/` ejecuta `& "C:\Android\gradle-8.5\bin\gradle.bat" :app:assembleDebug`; queda en `app/build/outputs/apk/debug/app-debug.apk`. Si usas Android Studio, selecciona la variante debug. Los APK en `app/build/` no están versionados.
+
+### Compilar una variante de publicación
 
 En la terminal, dentro de `CamStreamApp/`:
 
 ```powershell
-gradle assembleRelease
-# o
-gradlew.bat assembleRelease
+& "C:\Android\gradle-8.5\bin\gradle.bat" :app:assembleRelease
 ```
 
 El APK queda en `app/build/outputs/apk/release/`.
+La variante release requiere una firma adecuada antes de distribuirla. La compilación de desarrollo probada es `assembleDebug`; usa el APK publicado en Releases para distribuir una versión verificada.
 
 ## Uso
 
@@ -71,7 +72,7 @@ El video aparece en el visor del PC (`http://IP:8080/`) casi en tiempo real.
 
 - `MainActivity` muestra un preview y guarda la URL del servidor en `SharedPreferences`.
 - `StreamService` es un **foreground service** (obligatorio en Android 14) que mantiene la cámara activa incluso con la pantalla apagada.
-- `CameraX` (`ImageAnalysis`) entrega frames YUV → `MediaCodec` los codifica a H.264 → `FrameUploader` los envía en orden por `POST /upload-h264`.
+- `CameraX` (`ImageAnalysis`) entrega frames YUV → `MediaCodec` los codifica a H.264 → `FrameUploader` los envía en orden por una conexión `POST /stream-h264` persistente. `/upload-h264` queda para compatibilidad con escritorios anteriores.
 - `CamStreamDesktop` decodifica H.264 y muestra los fotogramas en su visor, incluso sin NDI.
 
 ## Configuración
@@ -79,7 +80,7 @@ El video aparece en el visor del PC (`http://IP:8080/`) casi en tiempo real.
 En la app puedes elegir:
 - **Cámara**: trasera / frontal
 - **Calidad**: baja / media / alta ajustan el bitrate H.264.
-- **FPS objetivo**: 10 / 15 / 24 / 30
+- **FPS objetivo**: 10 / 15 / 20 / 24 / 30. El perfil inicial es Alta (85), 20 FPS, 4 Mbps, captura 1280×720 cuando la cámara ofrece esa resolución.
 
 ## Permisos usados (Android 14)
 

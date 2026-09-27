@@ -1,0 +1,10 @@
+# Guía para agentes: CamStream
+
+- **Proyecto vigente:** `CamStreamApp/` (Android, Kotlin/CameraX/MediaCodec) + `CamStreamDesktop/` (Electron/Node, FFmpeg y cámara virtual DirectShow). No confundirlos con `server.js`, `phone.html` o `viewer.html` de la raíz: son el prototipo anterior.
+- **Inicio y pruebas de PC:** trabajar desde `CamStreamDesktop/`: `npm ci`, `npm test`, `npm start`. `npm run pack` genera `dist/win-unpacked/CamStreamDesktop.exe`; `npm run build` genera el portable. Solo una instancia puede usar el puerto 8080.
+- **Android:** trabajar desde `CamStreamApp/`. Compilar con Gradle 8.5/JDK 17 y SDK 34 (`& "C:\Android\gradle-8.5\bin\gradle.bat" :app:assembleDebug` en este equipo). El APK debug queda en `app/build/outputs/apk/debug/app-debug.apk`, con ID `com.anomaly.camstream.debug`.
+- **Configuración validada:** seleccionar Alta (85) y 20 FPS; la cámara prioriza 1280×720, bitrate alto 4 Mbps. La cámara virtual de PC entrega 640×480 por limitación actual del filtro; no tomar esa salida por la resolución de captura.
+- **Transporte:** Android envía NAL H.264 con longitud prefijada mediante `POST /stream-h264` persistente; la PC expone `/status` y `/frame.jpg`. `POST /upload-h264` queda como compatibilidad con escritorios anteriores. Mantener el orden de NAL y el control de presión de FFmpeg.
+- **Distribución:** GitHub `jyrocchi/video-app` y su sección Releases son la referencia de binarios publicados. `dist/`, `app/build/`, `.gradle/` y `node_modules/` son artefactos locales ignorados; no citar una carpeta versionada dentro de `dist/` como fuente de verdad, ni borrar la única compilación disponible antes de crear su reemplazo.
+- **Diagnóstico:** el registro en Android muestra `sensor`, `capt`, `yuv`, `up q`, `wait`, `dec`, `pipeQ`, `JPEG` y `render`. Colas actuales vacías no demuestran latencia extremo a extremo nula. El ADR del MCP `video-app` conserva las mediciones históricas; actualizarlo tras mediciones reales.
+- Mantener la capacidad de construir y probar **ambos extremos** cuando se cambie el protocolo. No reducir resolución/calidad para tratar latencia sin pedirlo explícitamente.

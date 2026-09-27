@@ -1,96 +1,27 @@
-# CamStream Desktop (con Camara Virtual)
+# CamStream Desktop (Windows)
 
-Visor, grabador y camara virtual para el stream de CamStream (Android).
+Esta es la **aplicación de PC vigente** para la app Android `CamStreamApp/`. Incluye servidor HTTP en puerto 8080, visor Electron, decodificador H.264 mediante FFmpeg, cámara virtual DirectShow y salida NDI opcional. La UI está en `viewer.html`; el servidor en `main.js`. El `server.js` de la raíz pertenece al prototipo anterior.
 
-## Que hace
+## Ejecutar y probar
 
-- Muestra el stream de tu celular en una ventana nativa de Windows
-- Reemplaza al `server.js` (lo incluye internamente en el puerto 8080)
-- Graba sesiones a MP4 (H.264)
-- **Se registra como camara virtual en Windows** - aparece en Zoom, Teams, Discord, etc.
-
-## Archivos
-
-- `main.js` - proceso principal: servidor HTTP, ventana, IPC, grabacion
-- `virtual-cam-writer.js` - escribe frames JPEG a memoria compartida (Node + koffi)
-- `ndi-sender.js` - salida NDI opcional
-- `viewer.html` / `styles.css` - UI de la ventana
-- `virtual-cam/` - DLL DirectShow de camara virtual (C++)
-- `virtual-cam/bin/CamStreamVirtualCam.dll` - DLL compilado (131 KB)
-- `register-virtualcam.bat` - registra la DLL como camara de Windows
-- `unregister-virtualcam.bat` - desregistra
-
-## Como usar
-
-1. **Inicia la app**:
-   ```
-   CamStreamDesktop-Launcher.bat
-   ```
-   O abre el ZIP y ejecuta el launcher.
-
-3. **Conecta el celular**:
-    - Abre la app **CamStream** en tu Android
-    - Con USB y depuración autorizada, ejecuta `C:\Android\platform-tools\adb.exe reverse tcp:8080 tcp:8080` en el PC y usa `http://127.0.0.1:8080` en el celular
-    - Por Wi-Fi, ingresa la URL que muestra la ventana (ej. `http://192.168.1.XX:8080`)
-    - Pulsa **Iniciar transmision**
-
-4. Pulsa **Instalar cámara virtual** en la ventana de CamStream Desktop. Se instala para el usuario actual, sin pedir permisos de administrador. Cierra y vuelve a abrir Zoom/Discord después de instalarla; selecciónala como **CamStream Virtual Camera**.
-
-4. **Usa como camara**:
-   - En Zoom / Teams / Discord / cualquier app
-   - Selecciona **"CamStream Virtual Camera"** en la lista de camaras
-   - La imagen de tu celular aparecera en tiempo real
-
-## Como funciona
-
-```
-[Android CamStream] --HTTP POST H.264--> [Electron app]
-                                            |
-                                    [H.264 decode -> BGRA 640x480]
-                                            |
-                               [visor JPEG + shared memory]
-                                            |
-                                            v
-                                  [CamStreamVirtualCam.dll]
-                                  (DirectShow source filter)
-                                            |
-                                            v
-                                  [Windows sees as webcam]
+```powershell
+npm ci
+npm test
+npm start
+npm run pack  # dist/win-unpacked/CamStreamDesktop.exe
+npm run build # portable .exe en dist/
 ```
 
-La DLL DirectShow lee frames del buffer compartido (`Global\CamStreamVirtualCam_Frame`)
-y los entrega a cualquier aplicacion que use DirectShow (que son todas las apps de camara
-en Windows).
+Antes de iniciar otra copia, cierra la instancia anterior que escuche en el puerto 8080. Para conectarte por USB: `C:\Android\platform-tools\adb.exe reverse tcp:8080 tcp:8080`; usa `http://127.0.0.1:8080` en Android. Por Wi-Fi usa la IP del PC que muestra la ventana. Para instalar el dispositivo, pulsa **Instalar cámara virtual** y vuelve a abrir la aplicación que vaya a consumirla.
 
-## Limites tecnicos
+## Flujo y archivos
 
-- DirectShow x64; resolución fija 640x480 RGB24
-- Formato RGB24 (la app decodifica JPEG y convierte)
-- Sin audio (es video solamente)
-- Latencia tipica: 100-200ms (depende de Wi-Fi y FPS configurado en el celular)
-- La DLL corre como InprocServer32 registrado en HKCU (no necesita admin)
+`POST /stream-h264` recibe NAL H.264 con prefijo de longitud de 4 bytes en big-endian. `main.js` mantiene una conexión activa, respeta backpressure y entrega NAL a `h264-decoder.js` (FFmpeg); `POST /upload-h264` sigue disponible para clientes anteriores. El visor Electron muestra solo el JPEG más reciente mientras termina de renderizar. `/status` expone métricas y `/frame.jpg` el último cuadro.
 
-## Compilacion desde codigo
+- `main.js`: recepción, vídeo, métricas, IPC, grabación, NDI y cámara virtual.
+- `h264-decoder.js`: FFmpeg H.264 → BGRA; usa `low_delay` y un hilo.
+- `viewer.html`, `preload.js`, `styles.css`: interfaz y puente IPC.
+- `virtual-cam-writer.js` y `virtual-cam/`: memoria compartida y filtro DirectShow; la DLL está en `virtual-cam/bin/CamStreamVirtualCam.dll`.
+- `test/stream-integration.js`: prueba de recepción persistente y decodificación JPEG.
 
-Si quieres recompilar la DLL:
-```
-cd virtual-cam
-build.bat
-```
-
-Requiere MSVC Build Tools (ya tienes `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools`).
-
-## Desinstalacion
-
-```
-unregister-virtualcam.bat
-```
-
-Elimina las entradas del registro. No elimina la DLL ni los archivos de la app.
-
-## Notas
-
-- El toggle "NDI" en la app sigue funcionando si tienes NDI Tools instalado
-- La app Cámara de Windows y otros clientes basados exclusivamente en Media Foundation pueden no enumerar filtros DirectShow. La implementación actual se orienta a clientes compatibles con DirectShow; soporte de Media Foundation requiere una implementación adicional.
-- Si no aparece "CamStream Virtual Camera" en Zoom/Discord, reinicia la aplicación después de instalarla.
-- Para grabar: pulsa "Grabar" en la app, elige ubicacion, pulsa "Detener" al terminar
+La **captura Android** prioriza 1280×720; actualmente el decodificador y el filtro virtual entregan **640×480 RGB24** a los consumidores de la cámara virtual. Cambiar esa salida exige actualizar conjuntamente FFmpeg, la memoria compartida, la DLL y sus pruebas. Los binarios en `dist/` son locales e ignorados por Git: genera uno nuevo desde el commit actual o usa un [release](https://github.com/jyrocchi/video-app/releases) asociado al tag correspondiente.
