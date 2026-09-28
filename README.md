@@ -1,4 +1,27 @@
-# JyroCam: celular Android → PC Windows
+# Otra app que agarra la cámara Android → PC versión minimax m3 y openai (ciclando entre sol y luna)!!
+
+Recomiendo usar la ip local en vez de usb.
+Si sienten que existe una latencia grande al momento de transmitir: pausa-esperar-activa!
+
+Compilación y api ocupadas:
+
+- Android: Gradle 8.5, JDK 17 y Android SDK 34.
+- PC: Node.js/npm y Electron 28; electron-builder 24.13.3 para generar el portable.
+- Cámara virtual Windows: Visual Studio Build Tools 18/MSVC y Windows SDK para compilar el controlador DirectShow.
+-  Pruebas e instalación: FFmpeg y ADB 37.0.1. Instalé el APK debug en tu Motorola por USB.
+- Publicación: Git y GitHub CLI para subir el commit y crear el release 1.0.1.
+
+APIs y tecnologías utilizadas
+- En Android: CameraX/Camera2 para la cámara, MediaCodec para codificar H.264, servicios foreground y notificaciones de Android
+-  Entre el celular y el PC: HTTP local, especialmente POST /stream-h264 y GET /status.
+-  En el PC: Electron IPC, Node.js, FFmpeg/libx264 para decodificar y grabar MP4, y JPEG-JS para los cuadros del visor.
+-  Para la cámara virtual: DirectShow/COM y APIs Win32 de memoria compartida y registro de DLL.
+-  No se usaron APIs de nube ni servicios externos para transmitir el video; el flujo entre el teléfono y el PC es local.
+
+
+ -------------------------- Explicación IA ------------------------------------------------
+
+## JyroCam: celular Android → PC Windows
 
 **Aplicación vigente:** `CamStreamApp/` (Android, nombre visible JyroCam) transmite H.264 a `CamStreamDesktop/` (Electron, nombre visible JyroCam). La aplicación de PC recibe el vídeo en el puerto 8080, lo muestra y puede enviarlo por NDI o a la cámara virtual DirectShow **JyroCam**. Si vas a modificar o ejecutar el proyecto, comienza por esas dos carpetas y consulta `AGENTS.md`.
 
