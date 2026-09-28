@@ -118,6 +118,7 @@ class FrameUploader(private val baseUrl: String) {
             streamOutput!!.flush()
             val writeMs = (SystemClock.elapsedRealtimeNanos() - writeStartedNs) / 1_000_000L
             updateAverage(avgStreamWriteMs, writeMs)
+            StreamStats.uploadDelayMs.set(avgQueueWaitMs.get() + avgStreamWriteMs.get())
             streamBytesSent.addAndGet(data.size.toLong() + 4L)
             StreamStats.uploadCount.incrementAndGet()
         } catch (e: Exception) {

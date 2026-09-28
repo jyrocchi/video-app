@@ -13,7 +13,7 @@ struct SharedFrame {
     DWORD width;
     DWORD height;
     DWORD stride;
-    DWORD format;
+    DWORD cameraState;
     DWORD64 timestamp;
     DWORD dataSize;
     BYTE  data[1];
@@ -25,6 +25,8 @@ struct SharedFrame {
 #define SHARED_FRAME_HEIGHT 480
 #define SHARED_FRAME_HEADER_SIZE ((DWORD)offsetof(SharedFrame, data))
 #define SHARED_FRAME_SIZE (SHARED_FRAME_HEADER_SIZE + SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT * 3)
+#define SHARED_CAMERA_STATE_IDLE 0
+#define SHARED_CAMERA_STATE_CONNECTED 1
 static_assert(offsetof(SharedFrame, timestamp) == 20, "Shared memory timestamp offset mismatch");
 static_assert(offsetof(SharedFrame, dataSize) == 28, "Shared memory dataSize offset mismatch");
 static_assert(offsetof(SharedFrame, data) == 32, "Shared memory pixel data offset mismatch");
@@ -32,7 +34,7 @@ static_assert(offsetof(SharedFrame, data) == 32, "Shared memory pixel data offse
 // Shared memory name for inter-process frame exchange
 #define SHARED_MEM_NAME L"Local\\CamStreamVirtualCam_Frame"
 
-#define FILTER_FRIENDLY_NAME L"CamStream Virtual Camera"
+#define FILTER_FRIENDLY_NAME L"JyroCam"
 #define FILTER_PIN_NAME L"Capture"
 
 // Forward declaration of CLSID (defined in shared_memory.cpp)

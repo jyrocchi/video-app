@@ -1,6 +1,6 @@
-# CamStream – App Android
+# JyroCam – App Android
 
-Aplicación nativa Android vigente que transmite la cámara del celular a `CamStreamDesktop/` (Electron). El servidor `server.js` de la raíz pertenece al prototipo web anterior.
+Aplicación nativa Android vigente que transmite la cámara del celular a JyroCam Desktop (Electron). El servidor `server.js` de la raíz pertenece al prototipo web anterior.
 
 ## Estructura
 
@@ -39,7 +39,7 @@ CamStreamApp/
 4. Pulsa **Run ▶** en Android Studio y elige tu dispositivo.
 5. La primera vez, Android Studio te pedirá instalar el SDK 34 si no lo tienes.
 
-Para generar el APK de depuración en este equipo, desde `CamStreamApp/` ejecuta `& "C:\Android\gradle-8.5\bin\gradle.bat" :app:assembleDebug`; queda en `app/build/outputs/apk/debug/app-debug.apk`. Si usas Android Studio, selecciona la variante debug. Los APK en `app/build/` no están versionados.
+Para generar el APK 1.0.1 de depuración en este equipo, desde `CamStreamApp/` ejecuta `& "C:\Android\gradle-8.5\bin\gradle.bat" :app:assembleDebug`; queda en `app/build/outputs/apk/debug/app-debug.apk` y conserva el ID `com.anomaly.camstream.debug` para actualizar la instalación previa. Si usas Android Studio, selecciona la variante debug. Los APK en `app/build/` no están versionados.
 
 ### Compilar una variante de publicación
 
@@ -63,7 +63,7 @@ La variante release requiere una firma adecuada antes de distribuirla. La compil
    En Android usa `http://127.0.0.1:8080`. Después de desconectar/reconectar el cable hay que repetir `adb reverse`.
    **Por Wi-Fi**, usa la URL con la IP del PC que muestra `CamStreamDesktop`; ambos deben estar en la misma red.
 
-3. En el celular, abre **CamStream**, comprueba la URL y concede el permiso de cámara.
+3. En el celular, abre **JyroCam**, comprueba la URL y concede el permiso de cámara.
 4. Pulsa **Iniciar transmisión**.
 
 El video aparece en el visor del PC (`http://IP:8080/`) casi en tiempo real.
@@ -80,7 +80,7 @@ El video aparece en el visor del PC (`http://IP:8080/`) casi en tiempo real.
 En la app puedes elegir:
 - **Cámara**: trasera / frontal
 - **Calidad**: baja / media / alta ajustan el bitrate H.264.
-- **FPS objetivo**: 10 / 15 / 20 / 24 / 30. El perfil inicial es Alta (85), 20 FPS, 4 Mbps, captura 1280×720 cuando la cámara ofrece esa resolución.
+- **FPS objetivo**: 10 / 20 / 30. El perfil inicial es Alta (85), 20 FPS, 4 Mbps, captura 1280×720 cuando la cámara ofrece esa resolución.
 
 ## Permisos usados (Android 14)
 

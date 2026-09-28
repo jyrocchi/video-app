@@ -13,5 +13,5 @@
     <color name="on_air_text">#FFFFFF</color>
     <color name="on_air_dot">#FF3030</color>
     <color name="stats_text">#00E676</color>
-    <color name="ic_launcher_background">#0A0A0A</color>
+    <color name="ic_launcher_background">#FFFFFF</color>
 </resources>

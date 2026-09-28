@@ -1,20 +1,19 @@
 {
-  "name": "camstream-desktop",
-  "version": "1.0.0",
-  "description": "Visor, grabador y camara virtual para el stream de CamStream",
+  "name": "jyrocam-desktop",
+  "version": "1.0.1",
+  "description": "JyroCam: visor, grabador y camara virtual",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test/stream-integration.js",
+    "test": "node test/virtual-cam-color.js && node test/stream-integration.js",
     "build": "electron-builder --win portable --x64",
     "pack": "electron-builder --dir --win --x64"
   },
-  "author": "CamStream",
+  "author": "JyroCam",
   "license": "MIT",
   "devDependencies": {
     "electron": "^28.2.0",
-    "electron-builder": "^24.9.1",
-    "electron-packager": "^17.1.2"
+    "electron-builder": "^24.9.1"
   },
   "dependencies": {
     "ffmpeg-static": "^5.1.0",
@@ -23,31 +22,32 @@
   },
   "build": {
     "appId": "com.anomaly.camstream.desktop",
-    "productName": "CamStreamDesktop",
-    "asarUnpack": ["node_modules/ffmpeg-static/ffmpeg.exe", "virtual-cam/bin/CamStreamVirtualCam.dll"],
+    "productName": "JyroCam",
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/ffmpeg.exe",
+      "virtual-cam/bin/JyroCamVirtualCam.dll"
+    ],
     "files": [
       "main.js",
       "preload.js",
       "viewer.html",
       "styles.css",
+      "build-assets/jyrocam.ico",
       "ndi-sender.js",
       "h264-decoder.js",
       "virtual-cam-writer.js",
-      "virtual-cam/**/*",
-      "!virtual-cam/**/*.obj",
-      "!virtual-cam/**/*.lib",
-      "!virtual-cam/**/*.exp",
-      "!virtual-cam/test-camera*",
+      "virtual-cam/bin/JyroCamVirtualCam.dll",
       "node_modules/**/*",
       "package.json"
     ],
     "win": {
+      "icon": "build-assets/jyrocam.ico",
       "target": "portable",
       "signAndEditExecutable": false,
-      "artifactName": "CamStreamDesktop-Portable-${version}.exe"
+      "artifactName": "JyroCam-Portable-${version}.exe"
     },
     "portable": {
-      "artifactName": "CamStreamDesktop-Portable-${version}.exe"
+      "artifactName": "JyroCam-Portable-${version}.exe"
     }
   }
 }

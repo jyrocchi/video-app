@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "DLL=%~dp0virtual-cam\bin\CamStreamVirtualCam.dll"
+set "DLL=%~dp0virtual-cam\bin\JyroCamVirtualCam.dll"
 
 if not exist "%DLL%" (
   echo ERROR: No se encontro la DLL "%DLL%"
@@ -19,7 +19,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo OK. CamStream Virtual Camera registrada como camara de Windows.
+echo OK. JyroCam registrada como camara de Windows.
 echo Para usarla en Zoom, Teams, etc. seleccionala en la lista de camaras.
 echo.
 pause

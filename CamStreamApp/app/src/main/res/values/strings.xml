@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">CamStream</string>
+    <string name="app_name">JyroCam</string>
     <string name="server_url">URL del servidor</string>
     <string name="server_hint">http://192.168.1.50:8080</string>
     <string name="start_stream">Iniciar transmisión</string>
@@ -20,7 +20,7 @@
     <string name="rotate_270">Rotar 270°</string>
     <string name="mirror_off">Espejo off</string>
     <string name="mirror_on">Espejo on</string>
-    <string name="notification_title">CamStream transmitiendo</string>
+    <string name="notification_title">JyroCam transmitiendo</string>
     <string name="notification_text">Toca para abrir</string>
     <string name="notification_channel_name">Transmisión</string>
     <string name="notification_channel_desc">Notificación del servicio de transmisión de cámara</string>

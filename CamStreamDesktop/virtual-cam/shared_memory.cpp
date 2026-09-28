@@ -30,7 +30,7 @@ extern "C" SharedFrame* SharedMemory_Open() {
         frame->width = SHARED_FRAME_WIDTH;
         frame->height = SHARED_FRAME_HEIGHT;
         frame->stride = SHARED_FRAME_WIDTH * 3;
-        frame->format = 0;
+        frame->cameraState = SHARED_CAMERA_STATE_IDLE;
         frame->timestamp = 0;
         frame->dataSize = SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT * 3;
         ZeroMemory(frame->data, frame->dataSize);

@@ -4,7 +4,6 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 
 const WIDTH = 640;
 const HEIGHT = 480;
@@ -38,7 +37,6 @@ class H264Decoder {
     this.fpsWindowStartedAt = Date.now();
     this.lastReport = Date.now();
     this.startedAt = 0;
-    this._inputDrainTimer = null;
   }
 
   start() {

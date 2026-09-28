@@ -142,7 +142,7 @@ STDMETHODIMP CFilter::JoinFilterGraph(IFilterGraph* pGraph, LPCWSTR pName) {
 STDMETHODIMP CFilter::QueryVendorInfo(LPWSTR* pVendorInfo) {
     if (!pVendorInfo) return E_POINTER;
     *pVendorInfo = (LPWSTR)CoTaskMemAlloc(32 * sizeof(WCHAR));
-    wcscpy(*pVendorInfo, L"CamStream");
+    wcscpy(*pVendorInfo, L"JyroCam");
     return S_OK;
 }
 

@@ -2,14 +2,14 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "ROOT=%~dp0"
-set "EXE1=%ROOT%dist\CamStreamDesktop-win32-x64\CamStreamDesktop.exe"
-set "EXE2=%ROOT%dist\win-unpacked\CamStreamDesktop.exe"
+set "EXE1=%ROOT%dist\JyroCam-Portable-1.0.0.exe"
+set "EXE2=%ROOT%dist\win-unpacked\JyroCam.exe"
 set "EXE="
 
 if exist "%EXE1%" set "EXE=%EXE1%"
 if "%EXE%"=="" if exist "%EXE2%" set "EXE=%EXE2%"
 
-echo === CamStream Desktop Launcher ===
+echo === JyroCam Launcher ===
 echo Raiz: %ROOT%
 echo Buscando binario...
 

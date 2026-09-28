@@ -1,13 +1,18 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const os = require('os');
-const { spawn } = require('child_process');
-const { spawnSync } = require('child_process');
-const ffmpegPath = require('ffmpeg-static');
+const { spawn, spawnSync } = require('child_process');
+let ffmpegPath = require('ffmpeg-static');
+if (ffmpegPath && ffmpegPath.includes('app.asar')) {
+  ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+}
+if (ffmpegPath && !path.isAbsolute(ffmpegPath)) {
+  ffmpegPath = path.resolve(ffmpegPath);
+}
 
-let sharedFrameBuf = null;
 let virtualCamWriter = null;
 try {
   const VirtualCamWriter = require('./virtual-cam-writer.js');
@@ -33,16 +38,11 @@ let httpServer = null;
 let latestFrameB64 = null;
 let latestFrameTime = 0;
 let latestFrameBuffer = null;
-let latestBgraBuffer = null;
-let latestBgraWidth = 0;
-let latestBgraHeight = 0;
 let rendererFramePending = false;
 let rendererFrameDirty = false;
 let rendererFrameSentAt = null;
 const sseClients = new Set();
 let recordingProc = null;
-let recordingPath = null;
-let recordingFps = 30;
 let frameCount = 0;
 let fpsCalcStart = Date.now();
 let currentFps = 0;
@@ -75,38 +75,76 @@ function updateAverage(previous, sample) {
 
 function getLocalIPs() {
   const ifaces = os.networkInterfaces();
-  const ips = [];
-  for (const name of Object.keys(ifaces)) {
-    for (const iface of ifaces[name]) {
+  const addresses = [];
+  const vpnInterface = /vpn|radmin|zerotier|tailscale|wireguard|wintun|hamachi|openvpn|tunnel|virtual|hyper-v|wsl|docker|bridge/i;
+  const lanInterface = /ethernet|wi-?fi|wireless|wlan|local area connection/i;
+  for (const [name, entries] of Object.entries(ifaces)) {
+    for (const iface of entries || []) {
       if (iface.family === 'IPv4' && !iface.internal) {
-        ips.push(iface.address);
+        const octets = iface.address.split('.').map(Number);
+        const isPrivate = octets[0] === 10 ||
+          (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+          (octets[0] === 192 && octets[1] === 168);
+        const isVpn = vpnInterface.test(name);
+        const isLan = lanInterface.test(name);
+        const priority = isVpn ? 4 : (isLan && isPrivate ? 0 : (isPrivate ? 1 : (isLan ? 2 : 3)));
+        addresses.push({ address: iface.address, priority, order: addresses.length });
       }
     }
   }
-  return ips;
+  return addresses
+    .sort((a, b) => a.priority - b.priority || a.order - b.order)
+    .map(entry => entry.address);
 }
 
 function getVirtualCamDllSource() {
   return app.isPackaged
-    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'virtual-cam', 'bin', 'CamStreamVirtualCam.dll')
-    : path.join(__dirname, 'virtual-cam', 'bin', 'CamStreamVirtualCam.dll');
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'virtual-cam', 'bin', 'JyroCamVirtualCam.dll')
+    : path.join(__dirname, 'virtual-cam', 'bin', 'JyroCamVirtualCam.dll');
 }
 
-function isVirtualCamRegistered() {
+function getInstalledVirtualCamDll(source = getVirtualCamDllSource()) {
+  const digest = fs.existsSync(source)
+    ? crypto.createHash('sha256').update(fs.readFileSync(source)).digest('hex').slice(0, 12)
+    : 'unavailable';
+  return path.join(app.getPath('userData'), 'virtual-camera', `v${app.getVersion()}`,
+    `JyroCamVirtualCam-${digest}.dll`);
+}
+
+function getVirtualCamStatus() {
   const key = `HKCU\\Software\\Classes\\CLSID\\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\\Instance\\${VIRTUAL_CAM_CLSID}`;
-  const result = spawnSync('reg.exe', ['query', key], { windowsHide: true, encoding: 'utf8' });
-  return result.status === 0;
+  const connected = virtualCamWriter?.isConnected() || false;
+  const registration = spawnSync('reg.exe', ['query', key], { windowsHide: true, encoding: 'utf8' });
+  if (registration.status !== 0) {
+    return { installed: false, updated: false, connected, state: 'removed' };
+  }
+
+  const friendlyName = /\bFriendlyName\s+REG_SZ\s+([^\r\n]+)/i
+    .exec(registration.stdout || '')?.[1]?.trim();
+  const moduleKey = `HKCU\\Software\\Classes\\CLSID\\${VIRTUAL_CAM_CLSID}\\InprocServer32`;
+  const moduleRegistration = spawnSync('reg.exe', ['query', moduleKey, '/ve'], {
+    windowsHide: true, encoding: 'utf8'
+  });
+  // /ve selects the unnamed registry value; its label is localized by Windows.
+  const registeredDll = /^\s*.+?\s+REG_SZ\s+(.+?)\s*$/im
+    .exec(moduleRegistration.stdout || '')?.[1]?.trim().replace(/^"|"$/g, '');
+  const expectedDll = getInstalledVirtualCamDll();
+  const updated = friendlyName?.toLowerCase() === 'jyrocam' && registeredDll &&
+    path.resolve(registeredDll).toLowerCase() === path.resolve(expectedDll).toLowerCase() &&
+    fs.existsSync(expectedDll);
+  return { installed: true, updated: !!updated, connected, state: updated ? 'current' : 'outdated' };
 }
 
 function setVirtualCamRegistration(install) {
   const source = getVirtualCamDllSource();
   if (!fs.existsSync(source)) return { ok: false, error: `No se encuentra el filtro DirectShow: ${source}` };
 
-  const installDir = path.join(app.getPath('userData'), 'virtual-camera', `v${app.getVersion()}`);
-  const installedDll = path.join(installDir, 'CamStreamVirtualCam.dll');
+  const installedDll = getInstalledVirtualCamDll(source);
   try {
     if (install) {
-      fs.mkdirSync(installDir, { recursive: true });
+      fs.mkdirSync(path.dirname(installedDll), { recursive: true });
+      // Content-addressed filenames let Windows keep an older DLL loaded while
+      // registering the new build alongside it.
       if (!fs.existsSync(installedDll)) fs.copyFileSync(source, installedDll);
     }
     const dllPath = install ? installedDll : (fs.existsSync(installedDll) ? installedDll : source);
@@ -142,9 +180,6 @@ function clearPublishedFrame() {
   latestFrameB64 = null;
   latestFrameBuffer = null;
   latestFrameTime = 0;
-  latestBgraBuffer = null;
-  latestBgraWidth = 0;
-  latestBgraHeight = 0;
   frameCount = 0;
   currentFps = 0;
   fpsCalcStart = Date.now();
@@ -445,7 +480,7 @@ function createHttpServer() {
 
   httpServer.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`Port ${PORT} in use. Try closing any other CamStream/server.js process.`);
+      console.error(`Port ${PORT} in use. Try closing any other JyroCam/server.js process.`);
     } else {
       console.error('HTTP server error:', err);
     }
@@ -470,7 +505,8 @@ function createWindow() {
     minWidth: 640,
     minHeight: 480,
     backgroundColor: '#0a0a0a',
-    title: 'CamStream Desktop',
+    icon: path.join(__dirname, 'build-assets', 'jyrocam.ico'),
+    title: 'JyroCam',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -495,51 +531,76 @@ function createWindow() {
 
 function startRecording(outputPath, fps) {
   if (recordingProc) return { ok: false, error: 'already recording' };
-  if (!ffmpegPath) return { ok: false, error: 'ffmpeg-static binary not found' };
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
+    return { ok: false, error: `ffmpeg-static binary not found: ${ffmpegPath || 'empty path'}` };
+  }
 
-  recordingFps = fps || 30;
-  recordingPath = outputPath;
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-  recordingProc = spawn(ffmpegPath, [
-    '-y',
-    '-f', 'image2pipe',
-    '-framerate', String(recordingFps),
-    '-i', '-',
-    '-c:v', 'libx264',
-    '-preset', 'ultrafast',
-    '-pix_fmt', 'yuv420p',
-    '-movflags', '+faststart',
-    outputPath
-  ], { stdio: ['pipe', 'ignore', 'pipe'] });
+  let proc;
+  try {
+    proc = spawn(ffmpegPath, [
+      '-y',
+      '-f', 'image2pipe',
+      '-vcodec', 'mjpeg',
+      '-framerate', String(fps || 30),
+      '-i', 'pipe:0',
+      '-an',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart',
+      outputPath
+    ], { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 
+  recordingProc = proc;
   let stderrBuf = '';
-  recordingProc.stderr.on('data', (d) => { stderrBuf += d.toString(); });
+  proc.stderr.on('data', (d) => { stderrBuf += d.toString(); });
+  proc.stdin.on('error', (err) => {
+    if (err.code !== 'EPIPE') console.warn('Recording input error:', err.message);
+  });
 
-  recordingProc.on('error', (err) => {
+  proc.once('spawn', () => {
+    notifyRenderer({ type: 'recording-started', path: outputPath });
+  });
+  proc.on('error', (err) => {
     console.error('ffmpeg error:', err);
+    if (recordingProc === proc) recordingProc = null;
     notifyRenderer({ type: 'recording-error', message: err.message });
-    recordingProc = null;
+  });
+  proc.on('exit', (code, signal) => {
+    console.log('ffmpeg exit code:', code, 'signal:', signal, 'stderr:', stderrBuf.slice(-500));
+    if (recordingProc === proc) recordingProc = null;
+    if (code === 0) {
+      notifyRenderer({ type: 'recording-stopped', code, path: outputPath });
+    } else {
+      notifyRenderer({ type: 'recording-error',
+        message: stderrBuf.slice(-500) || `FFmpeg terminó con código ${code ?? signal}` });
+    }
   });
 
-  recordingProc.on('exit', (code) => {
-    console.log('ffmpeg exit code:', code, 'stderr:', stderrBuf.slice(-500));
-    notifyRenderer({ type: 'recording-stopped', code, path: recordingPath });
-    recordingProc = null;
-  });
-
-  notifyRenderer({ type: 'recording-started', path: outputPath });
   return { ok: true, path: outputPath };
 }
 
 function stopRecording() {
   if (!recordingProc) return { ok: false, error: 'not recording' };
-  try { recordingProc.stdin.end(); } catch (_) {}
-  setTimeout(() => {
-    if (recordingProc) {
-      try { recordingProc.kill(); } catch (_) {}
-    }
-  }, 1500);
+  try { recordingProc.stdin.end(); }
+  catch (e) { return { ok: false, error: e.message }; }
   return { ok: true };
+}
+
+function getVideosPath() {
+  return app.getPath('videos') || path.join(os.homedir(), 'Videos');
+}
+
+function createRecordingPath() {
+  const videosPath = getVideosPath();
+  fs.mkdirSync(videosPath, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return path.join(videosPath, `JyroCam-${timestamp}.mp4`);
 }
 
 function startDecoder() {
@@ -562,9 +623,6 @@ function startDecoder() {
     }
     pcOutputStats.avgVirtualCamMs = updateAverage(pcOutputStats.avgVirtualCamMs,
       Number(process.hrtime.bigint() - stageStart) / 1e6);
-    latestBgraBuffer = bgraBuf;
-    latestBgraWidth = width;
-    latestBgraHeight = height;
     latestFrameTime = ts;
 
     // The desktop viewer, SSE clients and recorder all consume JPEG frames.
@@ -598,7 +656,7 @@ function startDecoder() {
 function tryEnableNdi() {
   try {
     const { NdiSender } = require('./ndi-sender.js');
-    ndiSender = new NdiSender('CamStream Desktop');
+    ndiSender = new NdiSender('JyroCam');
     ndiEnabled = true;
     console.log('NDI sender initialized');
 
@@ -609,40 +667,49 @@ function tryEnableNdi() {
   }
 }
 
-ipcMain.handle('start-recording', async (_event, { fps }) => {
+ipcMain.handle('start-recording', async (_event, { fps } = {}) => {
   if (!mainWindow) return { ok: false };
-  const defaultName = `camstream-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`;
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Guardar grabacion',
-    defaultPath: path.join(app.getPath('videos') || os.homedir(), defaultName),
-    filters: [{ name: 'Video MP4', extensions: ['mp4'] }]
-  });
-  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
-  return startRecording(result.filePath, fps);
+  try {
+    return startRecording(createRecordingPath(), fps);
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 });
 
 ipcMain.handle('stop-recording', () => stopRecording());
 ipcMain.on('frame-rendered', onRendererFrameRendered);
 
-ipcMain.handle('get-info', () => ({
-  port: PORT,
-  ips: getLocalIPs(),
-  ndi: ndiEnabled,
-  ndiError: ndiInitError,
-  ffmpeg: !!ffmpegPath,
-  virtualCamInstalled: isVirtualCamRegistered()
-}));
+ipcMain.handle('get-info', () => {
+  const virtualCam = getVirtualCamStatus();
+  return {
+    port: PORT,
+    ips: getLocalIPs(),
+    ndi: ndiEnabled,
+    ndiError: ndiInitError,
+    ffmpeg: !!ffmpegPath,
+    virtualCamInstalled: virtualCam.installed,
+    virtualCamUpdated: virtualCam.updated,
+    virtualCamConnected: virtualCam.connected
+  };
+});
 
 ipcMain.handle('set-virtual-camera', (_event, install) => {
   const result = setVirtualCamRegistration(!!install);
-  if (result.ok) result.installed = isVirtualCamRegistered();
+  if (result.ok) {
+    const status = getVirtualCamStatus();
+    result.installed = status.installed;
+    result.updated = status.updated;
+    result.connected = status.connected;
+    result.state = status.state;
+  }
   return result;
 });
 
 ipcMain.handle('open-folder', async () => {
-  const folder = recordingPath ? path.dirname(recordingPath) : app.getPath('videos');
-  await shell.openPath(folder);
-  return { ok: true };
+  const folder = getVideosPath();
+  fs.mkdirSync(folder, { recursive: true });
+  const error = await shell.openPath(folder);
+  return error ? { ok: false, error } : { ok: true, path: folder };
 });
 
 ipcMain.handle('toggle-ndi', async () => {

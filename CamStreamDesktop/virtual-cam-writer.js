@@ -13,6 +13,7 @@ class VirtualCamWriter {
     this.hMap = null;
     this.view = null;
     this.staging = null;
+    this.headerSnapshot = Buffer.alloc(32);
     this.opened = false;
     this.UnmapViewOfFile = null;
     this.CloseHandle = null;
@@ -63,7 +64,7 @@ class VirtualCamWriter {
     this.staging.writeUInt32LE(FRAME_WIDTH, 4);    // width
     this.staging.writeUInt32LE(FRAME_HEIGHT, 8);   // height
     this.staging.writeUInt32LE(FRAME_WIDTH * 3, 12); // stride
-    this.staging.writeUInt32LE(0, 16);              // format
+    this.staging.writeUInt32LE(0, 16);              // no active DirectShow client
     this.staging.writeBigUInt64LE(BigInt(Date.now()), 20); // timestamp
     this.staging.writeUInt32LE(RGB_SIZE, 28);       // dataSize
   }
@@ -77,21 +78,21 @@ class VirtualCamWriter {
       const offset = 32; // skip header
 
       for (let y = 0; y < dh; y++) {
-        // DirectShow RGB24 with positive biHeight is bottom-up.
+        // BI_RGB / RGB24 is stored as BGR and positive biHeight is bottom-up.
         const srcY = sh - 1 - Math.floor(y * sh / dh);
         for (let x = 0; x < dw; x++) {
           const srcX = Math.floor(x * sw / dw);
           const srcIdx = (srcY * sw + srcX) * 4;
           const dstIdx = offset + (y * dw + x) * 3;
-          dst[dstIdx] = rgba[srcIdx];
+          dst[dstIdx] = rgba[srcIdx + 2];
           dst[dstIdx + 1] = rgba[srcIdx + 1];
-          dst[dstIdx + 2] = rgba[srcIdx + 2];
+          dst[dstIdx + 2] = rgba[srcIdx];
         }
-      }
-      // Update timestamp
-      this.staging.writeBigUInt64LE(BigInt(Date.now()), 20);
-      // Flush to shared memory
-      this.RtlMoveMemory(this.view, this.staging, SHARED_FRAME_SIZE);
+        }
+        // Update timestamp
+        this.staging.writeBigUInt64LE(BigInt(Date.now()), 20);
+        // Flush to shared memory
+        this.flushToSharedMemory();
       return true;
     } catch (e) {
       console.error('VirtualCam.write failed:', e.message);
@@ -107,34 +108,43 @@ class VirtualCamWriter {
       const dst = this.staging;
       const offset = 32;
 
-      if (sw === dw && sh === dh) {
-        for (let i = 0; i < dw * dh; i++) {
-          const srcIdx = i * 4;
-          const dstIdx = offset + i * 3;
-          dst[dstIdx]     = bgra[srcIdx + 2]; // R (was B in BGRA)
+      for (let y = 0; y < dh; y++) {
+        // FFmpeg supplies top-down BGRA; DirectShow RGB24 expects bottom-up BGR.
+        const srcY = sh - 1 - Math.floor(y * sh / dh);
+        for (let x = 0; x < dw; x++) {
+          const srcX = Math.floor(x * sw / dw);
+          const srcIdx = (srcY * sw + srcX) * 4;
+          const dstIdx = offset + (y * dw + x) * 3;
+          dst[dstIdx]     = bgra[srcIdx];     // B
           dst[dstIdx + 1] = bgra[srcIdx + 1]; // G
-          dst[dstIdx + 2] = bgra[srcIdx];     // B (was R in BGRA)
-        }
-      } else {
-        for (let y = 0; y < dh; y++) {
-          const srcY = sh - 1 - Math.floor(y * sh / dh);
-          for (let x = 0; x < dw; x++) {
-            const srcX = Math.floor(x * sw / dw);
-            const srcIdx = (srcY * sw + srcX) * 4;
-            const dstIdx = offset + (y * dw + x) * 3;
-            dst[dstIdx]     = bgra[srcIdx + 2];
-            dst[dstIdx + 1] = bgra[srcIdx + 1];
-            dst[dstIdx + 2] = bgra[srcIdx];
-          }
+          dst[dstIdx + 2] = bgra[srcIdx + 2]; // R
         }
       }
       this.staging.writeBigUInt64LE(BigInt(Date.now()), 20);
-      this.RtlMoveMemory(this.view, this.staging, SHARED_FRAME_SIZE);
+      this.flushToSharedMemory();
       return true;
     } catch (e) {
       console.error('VirtualCam.writeBgra failed:', e.message);
       return false;
     }
+  }
+
+  isConnected() {
+    if (!this.opened || !this.view) return false;
+    try {
+      this.RtlMoveMemory(this.headerSnapshot, this.view, this.headerSnapshot.length);
+      return this.headerSnapshot.readUInt32LE(16) === 1;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  flushToSharedMemory() {
+    // The DirectShow filter owns this word; preserve its live connection flag
+    // when publishing the rest of the frame header and pixels.
+    this.RtlMoveMemory(this.headerSnapshot, this.view, this.headerSnapshot.length);
+    this.staging.writeUInt32LE(this.headerSnapshot.readUInt32LE(16), 16);
+    this.RtlMoveMemory(this.view, this.staging, SHARED_FRAME_SIZE);
   }
 
   close() {

@@ -35,6 +35,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.Locale
 
 class StreamService : LifecycleService() {
 
@@ -53,7 +54,7 @@ class StreamService : LifecycleService() {
     private val mirrorRef = AtomicBoolean(false)
     private val rotationRef = AtomicInteger(0)
     private val facingBackRef = AtomicBoolean(true)
-    private val targetFpsRef = AtomicInteger(15)
+    private val targetFpsRef = AtomicInteger(DEFAULT_FPS)
     private val bitrateRef = AtomicInteger(2_500_000)
     private val serviceActive = AtomicBoolean(false)
 
@@ -75,6 +76,8 @@ class StreamService : LifecycleService() {
         const val ACTION_UPDATE_TRANSFORM = "com.anomaly.camstream.UPDATE_TRANSFORM"
         const val EXTRA_SERVER_URL = "server_url"
         const val EXTRA_FPS = "fps"
+        const val DEFAULT_FPS = 20
+        private val ALLOWED_FPS = setOf(10, 20, 30)
         const val EXTRA_QUALITY = "quality"
         const val EXTRA_FACING_BACK = "facing_back"
         const val EXTRA_ROTATION = "rotation"
@@ -145,7 +148,8 @@ class StreamService : LifecycleService() {
                 else -> {
                     val i = intent ?: return START_STICKY
                     val url = i.getStringExtra(EXTRA_SERVER_URL).orEmpty()
-                    val fps = i.getIntExtra(EXTRA_FPS, 15).coerceIn(1, 60)
+                    val requestedFps = i.getIntExtra(EXTRA_FPS, DEFAULT_FPS)
+                    val fps = if (requestedFps in ALLOWED_FPS) requestedFps else DEFAULT_FPS
                     val quality = i.getIntExtra(EXTRA_QUALITY, 70).coerceIn(10, 100)
                     val facingBack = i.getBooleanExtra(EXTRA_FACING_BACK, true)
                     val rotation = i.getIntExtra(EXTRA_ROTATION, 0)
@@ -167,7 +171,6 @@ class StreamService : LifecycleService() {
                     startForeground(NOTIF_ID, buildNotification(),
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
                     serviceActive.set(true)
-                    StreamStats.state.set("Iniciando cámara")
                     StreamStats.reset()
                     StreamStats.addLog("Servicio iniciado: ${fps}fps, calidad $quality, bitrate ${bitrateRef.get() / 1000}kbps")
                     captureCount.set(0)
@@ -214,7 +217,6 @@ class StreamService : LifecycleService() {
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to obtain camera provider: ${e.message}", e)
                         StreamStats.lastError.set("provider: ${e.message}")
-                        StreamStats.state.set("Error: ${e.message}")
                         StreamStats.addLog("No se pudo abrir CameraX: ${e.message}")
                     }
                 }, ContextCompat.getMainExecutor(this@StreamService))
@@ -239,7 +241,10 @@ class StreamService : LifecycleService() {
         cameraProvider = null
         uploader?.shutdown()
         uploader = null
-        StreamStats.state.set("Detenido")
+        StreamStats.desktopConnected.set(false)
+        StreamStats.resolution.set(null)
+        StreamStats.activeFps.set(null)
+        StreamStats.uploadDelayMs.set(-1)
         StreamStats.addLog("Servicio de cámara detenido")
     }
 
@@ -279,11 +284,9 @@ class StreamService : LifecycleService() {
             provider.unbindAll()
             provider.bindToLifecycle(this, selector, analysis)
             Log.i(TAG, "Camera bound targetFps=${fps} H264")
-            StreamStats.state.set("Cámara activa @${fps}fps; iniciando codificador")
         } catch (e: Exception) {
             Log.e(TAG, "Bind failed: ${e.message}", e)
             StreamStats.lastError.set("bind: ${e.message}")
-            StreamStats.state.set("Error bind: ${e.message}")
         }
     }
 
@@ -380,7 +383,7 @@ class StreamService : LifecycleService() {
                 encoderSourceHeight = image.height
                 encoderOutputWidth = outputWidth
                 encoderOutputHeight = outputHeight
-                StreamStats.state.set("Transmitiendo @${fps}fps ${image.width}x${image.height} H264")
+                StreamStats.resolution.set("${outputWidth}×${outputHeight}")
                 StreamStats.addLog(
                     "CameraX ${image.width}x${image.height} rot=${image.imageInfo.rotationDegrees}° " +
                         "strideY/U/V=${yRowStride}/${uRowStride}/${vRowStride} " +
@@ -435,6 +438,7 @@ class StreamService : LifecycleService() {
         if (elapsed >= 3000) {
             val delta = captureCount.get() - lastReportCount
             val actualFps = delta.toDouble() * 1000.0 / elapsed
+            StreamStats.activeFps.set(String.format(Locale.getDefault(), "%.1f", actualFps))
             val cameraDelta = cameraFrameCount.get() - lastCameraReportCount
             val cameraFps = cameraDelta.toDouble() * 1000.0 / elapsed
             val gateSkipped = rateLimitSkipCount.getAndSet(0)
@@ -444,9 +448,7 @@ class StreamService : LifecycleService() {
                 "${h264Encoder?.timingSummary() ?: ""} | " +
                 "${uploader?.statsSummary() ?: "up —"} | NAL=${nalCount.get()} drop=${StreamStats.dropCount.get()}"
             Log.i(TAG, msg)
-            StreamStats.lastFps.set(msg)
             StreamStats.addLog(msg)
-            StreamStats.captureCount.set(captureCount.get())
             StreamStats.dropCount.set(0)
             lastReportMs = nowMs
             lastReportCount = captureCount.get()

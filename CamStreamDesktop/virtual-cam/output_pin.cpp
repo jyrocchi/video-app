@@ -116,10 +116,16 @@ HRESULT COutputPin::Initialize() {
 HRESULT COutputPin::Shutdown() {
     if (m_bShutdown) return S_OK;
     m_bShutdown = TRUE;
+    if (m_pSharedFrame) {
+        InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_IDLE);
+    }
     if (m_hThread) {
         WaitForSingleObject(m_hThread, 2000);
         CloseHandle(m_hThread);
         m_hThread = NULL;
+    }
+    if (m_pSharedFrame) {
+        InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_IDLE);
     }
     if (m_pAllocator) { m_pAllocator->Release(); m_pAllocator = NULL; }
     if (m_pMemInputPin) { m_pMemInputPin->Release(); m_pMemInputPin = NULL; }
@@ -203,6 +209,7 @@ STDMETHODIMP COutputPin::Connect(IPin* pReceivePin, const AM_MEDIA_TYPE* pmt) {
     m_bShutdown = FALSE;
     m_hThread = CreateThread(NULL, 0, ThreadProc, this, 0, &m_dwThreadId);
     if (!m_hThread) { hr = HRESULT_FROM_WIN32(GetLastError()); goto fail; }
+    InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_CONNECTED);
     return S_OK;
 
 fail:
@@ -220,10 +227,16 @@ STDMETHODIMP COutputPin::ReceiveConnection(IPin*, const AM_MEDIA_TYPE*) {
 STDMETHODIMP COutputPin::Disconnect() {
     if (!m_pConnectedPin) return S_FALSE;
     m_bShutdown = TRUE;
+    if (m_pSharedFrame) {
+        InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_IDLE);
+    }
     if (m_hThread) {
         WaitForSingleObject(m_hThread, 2000);
         CloseHandle(m_hThread);
         m_hThread = NULL;
+    }
+    if (m_pSharedFrame) {
+        InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_IDLE);
     }
     if (m_pAllocator) { m_pAllocator->Decommit(); m_pAllocator->Release(); m_pAllocator = NULL; }
     if (m_pMemInputPin) { m_pMemInputPin->Release(); m_pMemInputPin = NULL; }
@@ -385,7 +398,6 @@ void COutputPin::DeliveryLoop() {
             Sleep(10);
             continue;
         }
-
         IMediaSample* pSample = NULL;
         HRESULT hr = m_pAllocator->GetBuffer(&pSample, NULL, NULL, 0);
         if (FAILED(hr) || !pSample) {
@@ -403,6 +415,7 @@ void COutputPin::DeliveryLoop() {
         DWORD w, h;
         DWORD64 ts;
         if (SharedMemory_ReadFrame(m_pSharedFrame, pData, m_mt.lSampleSize, &w, &h, &ts)) {
+            InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_CONNECTED);
             REFERENCE_TIME start = m_rtNextSample;
             REFERENCE_TIME end = start + 333333;
             m_rtNextSample = end;

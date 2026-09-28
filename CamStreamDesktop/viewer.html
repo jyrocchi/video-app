@@ -2,14 +2,14 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>CamStream Desktop</title>
+<title>JyroCam</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header>
     <div class="brand">
       <span class="logo">●</span>
-      <span>CamStream Desktop</span>
+      <span>JyroCam</span>
     </div>
     <div class="status">
       <span id="connDot" class="dot"></span>
@@ -27,7 +27,7 @@
       <div id="placeholder">
         <div class="big-icon">📱</div>
         <h2>Esperando conexion del celular</h2>
-        <p>Abre la app <b>CamStream</b> en tu Android y configura esta URL:</p>
+        <p>Abre la app <b>JyroCam</b> en tu Android y configura esta URL:</p>
         <div id="phoneUrlBox"></div>
         <p class="hint">Puerto: <span id="portText">8080</span></p>
         <p class="hint">Por USB: ejecuta <code>adb reverse tcp:8080 tcp:8080</code> y usa <code>http://127.0.0.1:8080</code> en Android.</p>
@@ -41,7 +41,7 @@
         <span class="rec-dot"></span>
         <span id="recordLabel">Grabar</span>
       </button>
-      <button id="openFolderBtn" class="btn-secondary" disabled>Abrir carpeta</button>
+      <button id="openFolderBtn" class="btn-secondary">Abrir carpeta</button>
       <button id="virtualCamBtn" class="btn-secondary">Instalar cámara virtual</button>
     </div>
     <div class="right">
@@ -83,6 +83,25 @@ const virtualCamBtn = $('virtualCamBtn');
 let recording = false;
 let recordingStart = 0;
 let recTimer = null;
+let virtualCamBusy = false;
+
+function updateVirtualCamButton(info) {
+  if (virtualCamBusy) return;
+  if (!info.virtualCamInstalled) {
+    virtualCamBtn.textContent = 'Instalar cámara virtual';
+    virtualCamBtn.disabled = false;
+  } else if (info.virtualCamConnected) {
+    virtualCamBtn.textContent = info.virtualCamUpdated
+      ? 'JyroCam conectada' : 'Desconecta JyroCam para actualizar';
+    virtualCamBtn.disabled = true;
+  } else if (info.virtualCamUpdated) {
+    virtualCamBtn.textContent = 'Quitar cámara virtual';
+    virtualCamBtn.disabled = false;
+  } else {
+    virtualCamBtn.textContent = 'Actualizar cámara virtual';
+    virtualCamBtn.disabled = false;
+  }
+}
 
 async function init() {
   const info = await window.api.getInfo();
@@ -91,7 +110,7 @@ async function init() {
   phoneUrlBox.innerHTML = `<code>${url}</code>`;
 
   ndiToggle.checked = info.ndi;
-  virtualCamBtn.textContent = info.virtualCamInstalled ? 'Quitar cámara virtual' : 'Instalar cámara virtual';
+  updateVirtualCamButton(info);
   if (info.ndi) {
     ndiStatus.textContent = 'Activo';
     ndiStatus.className = 'ndi-status on';
@@ -160,34 +179,47 @@ window.api.onEvent((payload) => {
 });
 
 recordBtn.addEventListener('click', async () => {
-  if (recording) {
-    await window.api.stopRecording();
-  } else {
-    const res = await window.api.startRecording({ fps: 30 });
-    if (!res.ok && !res.canceled) {
-      alert('No se pudo iniciar la grabacion: ' + (res.error || ''));
+  recordBtn.disabled = true;
+  try {
+    if (recording) {
+      const res = await window.api.stopRecording();
+      if (!res.ok) alert('No se pudo detener la grabacion: ' + (res.error || ''));
+    } else {
+      const res = await window.api.startRecording({ fps: 30 });
+      if (!res.ok) alert('No se pudo iniciar la grabacion: ' + (res.error || ''));
     }
+  } catch (error) {
+    alert('Error de grabacion: ' + error.message);
+  } finally {
+    recordBtn.disabled = false;
   }
 });
 
-openFolderBtn.addEventListener('click', () => {
-  window.api.openFolder();
+openFolderBtn.addEventListener('click', async () => {
+  try {
+    const result = await window.api.openFolder();
+    if (!result.ok) alert('No se pudo abrir Videos: ' + (result.error || ''));
+  } catch (error) {
+    alert('No se pudo abrir Videos: ' + error.message);
+  }
 });
 
 virtualCamBtn.addEventListener('click', async () => {
+  virtualCamBusy = true;
   virtualCamBtn.disabled = true;
-  const installing = virtualCamBtn.textContent.startsWith('Instalar');
+  const installing = !virtualCamBtn.textContent.startsWith('Quitar');
   try {
     const result = await window.api.setVirtualCamera(installing);
     if (!result.ok) throw new Error(result.error || 'No se pudo cambiar el registro de la cámara.');
-    virtualCamBtn.textContent = result.installed ? 'Quitar cámara virtual' : 'Instalar cámara virtual';
     alert(result.installed
-      ? 'CamStream Virtual Camera quedó instalada para este usuario. Cierra y vuelve a abrir Zoom/Discord para que aparezca.'
-      : 'CamStream Virtual Camera quedó desinstalada.');
+      ? 'JyroCam quedó instalada como cámara virtual para este usuario. Cierra y vuelve a abrir Zoom/Discord para que aparezca.'
+      : 'La cámara virtual JyroCam quedó desinstalada.');
   } catch (error) {
     alert(`Error con la cámara virtual: ${error.message}`);
   } finally {
-    virtualCamBtn.disabled = false;
+    virtualCamBusy = false;
+    try { updateVirtualCamButton(await window.api.getInfo()); }
+    catch (_) { virtualCamBtn.disabled = false; }
   }
 });
 
@@ -206,6 +238,7 @@ ndiToggle.addEventListener('change', async () => {
 setInterval(async () => {
   const info = await window.api.getInfo();
   if (!info.ndi) ndiToggle.checked = false;
+  updateVirtualCamButton(info);
 }, 3000);
 
 init();
