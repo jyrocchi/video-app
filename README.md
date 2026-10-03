@@ -6,30 +6,35 @@
 
 ## Versión verificada
 
-[JyroCam 1.0.1](https://github.com/jyrocchi/video-app/releases/tag/v1.0.1) incluye el portable Windows con cámara virtual DirectShow y el APK Android (`com.anomaly.camstream.debug`). El [release histórico **v1.0.0-delay-v1**](https://github.com/jyrocchi/video-app/releases/tag/v1.0.0-delay-v1) corresponde a `ba4a4be`, no a la versión JyroCam. La fuente editable de ambas aplicaciones sigue en `main`.
+[JyroCam 1.0.2 — Compatibilidad android + resolución fija](https://github.com/jyrocchi/video-app/releases/tag/v1.0.2) incluye el portable Windows y el APK actualizado (`com.anomaly.camstream.debug`). Fuente en la rama [`compatibilidad-android-resolucion-fija`](https://github.com/jyrocchi/video-app/tree/compatibilidad-android-resolucion-fija); código del binario/tag desde `39751b0`. Se conservan los releases [1.0.1](https://github.com/jyrocchi/video-app/releases/tag/v1.0.1) y [v1.0.0-delay-v1](https://github.com/jyrocchi/video-app/releases/tag/v1.0.0-delay-v1).
+
+- [Descargar Windows x64](https://github.com/jyrocchi/video-app/releases/download/v1.0.2/JyroCam-Portable-1.0.2.exe)
+- [Descargar APK Android](https://github.com/jyrocchi/video-app/releases/download/v1.0.2/JyroCam-1.0.2.apk)
+- [SHA256 de los archivos](https://github.com/jyrocchi/video-app/releases/download/v1.0.2/checksums-1.0.2.sha256)
 
 ## Uso
 
 1. En Windows abre **JyroCam** (el portable rebrandeado o `npm start` desde `CamStreamDesktop/`). Cierra otras instancias que ocupen el puerto 8080.
 2. En el teléfono abre **JyroCam**. Por Wi-Fi usa la URL `http://<IP-del-PC>:8080` que muestra la ventana. Por USB, ejecuta `C:\Android\platform-tools\adb.exe reverse tcp:8080 tcp:8080` y utiliza `http://127.0.0.1:8080` en el teléfono.
-3. Selecciona **Alta (85)** y **20 FPS** (valores iniciales), e inicia la transmisión. La captura prioriza 1280×720; el resultado real aparece en el registro de la app.
+3. Inicia la transmisión. El perfil está fijo en **1280×720 a 30 FPS**, con bitrate H.264 objetivo 6000 kbps y techo de transporte 8000 kbps. **Rotar** está oculto/deshabilitado; cámara y espejo siguen disponibles.
 
-La cámara virtual DirectShow instalada desde la ventana de escritorio utiliza actualmente una salida fija de 640×480. Es distinta de la resolución de captura Android; consulta `CamStreamDesktop/README.md` antes de cambiarla.
+El visor, NDI y la cámara virtual DirectShow entregan **1280×720**. Tras actualizar, pulsa **Actualizar cámara virtual** si se ofrece ese botón y vuelve a abrir el consumidor. Compatibilidad funcional Android 7–17, condiciones de emulador y mediciones Wi-Fi/espejo: `CamStreamApp/COMPATIBILITY.md` y `CamStreamDesktop/PERFORMANCE.md`.
 
 ## Desarrollar y generar aplicaciones
 
-Requisitos: Node.js y npm, JDK 17, Android SDK 34 y Gradle 8.5/Android Studio. En este equipo Gradle está en `C:\Android\gradle-8.5\bin\gradle.bat` y el SDK en `C:\Android`.
+Requisitos: Node.js/npm, JDK 17 y Android SDK 36. Se incluye el wrapper Gradle 8.13 con checksum fijado; Android usa AGP 8.13.2, Kotlin 2.2.21 y CameraX 1.6.2. El APK conserva minSdk 24 y targetSdk 34.
 
 ```powershell
 # Desde CamStreamDesktop/
 npm ci
 npm test
 npm start
+virtual-cam/build.bat
 npm run pack     # dist/win-unpacked/JyroCam.exe
 npm run build    # ejecutable portable en dist/
 
 # Desde CamStreamApp/
-& "C:\Android\gradle-8.5\bin\gradle.bat" :app:assembleDebug
+.\gradlew.bat :app:assembleDebug
 # app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -43,4 +48,4 @@ npm run build    # ejecutable portable en dist/
 - `CamStreamDesktop/viewer.html`, `preload.js`, `styles.css`: interfaz Electron e IPC.
 - `CamStreamDesktop/virtual-cam/` y `virtual-cam-writer.js`: filtro DirectShow y memoria compartida.
 
-La referencia de diagnóstico y decisiones de latencia está en el ADR del proyecto `video-app` del MCP. Sigue el código y los commits como fuente de verdad para la implementación.
+El ADR y el índice persistente de Codebase Memory (`video-app`) conservan diagnóstico/mediciones; Serena tiene memorias reutilizables en `.serena/memories/`, versionadas junto con el proyecto. `RELEASE_NOTES_1.0.2.md` registra la publicación y `checksums-1.0.2.sha256` la integridad de los descargables. Sigue el código y los commits como fuente de verdad para la implementación.
