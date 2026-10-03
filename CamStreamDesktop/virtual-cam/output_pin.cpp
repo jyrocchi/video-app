@@ -3,6 +3,7 @@
 #include "virtual-cam.h"
 #include <dshow.h>
 #include <vfw.h>
+#include <mmsystem.h>
 
 class CEnumMediaTypes : public IEnumMediaTypes {
 public:
@@ -116,6 +117,7 @@ HRESULT COutputPin::Initialize() {
 HRESULT COutputPin::Shutdown() {
     if (m_bShutdown) return S_OK;
     m_bShutdown = TRUE;
+    if (m_pAllocator) m_pAllocator->Decommit();
     if (m_pSharedFrame) {
         InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_IDLE);
     }
@@ -227,6 +229,7 @@ STDMETHODIMP COutputPin::ReceiveConnection(IPin*, const AM_MEDIA_TYPE*) {
 STDMETHODIMP COutputPin::Disconnect() {
     if (!m_pConnectedPin) return S_FALSE;
     m_bShutdown = TRUE;
+    if (m_pAllocator) m_pAllocator->Decommit();
     if (m_pSharedFrame) {
         InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_IDLE);
     }
@@ -286,6 +289,15 @@ STDMETHODIMP COutputPin::QueryAccept(const AM_MEDIA_TYPE* pmt) {
     if (!pmt) return E_POINTER;
     if (pmt->majortype != MEDIATYPE_Video) return VFW_E_TYPE_NOT_ACCEPTED;
     if (pmt->subtype != MEDIASUBTYPE_RGB24) return VFW_E_TYPE_NOT_ACCEPTED;
+    if (pmt->formattype != FORMAT_VideoInfo || !pmt->pbFormat ||
+        pmt->cbFormat < sizeof(VIDEOINFOHEADER)) return VFW_E_TYPE_NOT_ACCEPTED;
+    const VIDEOINFOHEADER* vih = (const VIDEOINFOHEADER*)pmt->pbFormat;
+    if (vih->bmiHeader.biWidth != SHARED_FRAME_WIDTH ||
+        vih->bmiHeader.biHeight != SHARED_FRAME_HEIGHT ||
+        vih->bmiHeader.biBitCount != 24 ||
+        vih->bmiHeader.biCompression != BI_RGB ||
+        pmt->lSampleSize != SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT * 3)
+        return VFW_E_TYPE_NOT_ACCEPTED;
     return S_OK;
 }
 
@@ -393,9 +405,36 @@ DWORD WINAPI COutputPin::ThreadProc(LPVOID pParam) {
 }
 
 void COutputPin::DeliveryLoop() {
+    // Modern Windows applies timer resolution per process. A consumer without
+    // this request can round Sleep(1) to ~15.6ms and lose 30fps deadlines even
+    // while Electron's own timers/rendering stay smooth.
+    const bool preciseSleep = timeBeginPeriod(1) == TIMERR_NOERROR;
+    LARGE_INTEGER frequency, epoch, now;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&epoch);
+    LONGLONG frameIndex = 0;
+    DWORD64 lastTimestamp = 0;
     while (!m_bShutdown) {
-        if (m_bFlushing || !m_pMemInputPin || !m_pAllocator) {
+        QueryPerformanceCounter(&now);
+        const LONGLONG due = epoch.QuadPart + frameIndex * frequency.QuadPart / 30;
+        if (now.QuadPart < due) {
+            DWORD waitMs = (DWORD)((due - now.QuadPart) * 1000 / frequency.QuadPart);
+            Sleep(waitMs > 0 ? waitMs : 1);
+            continue;
+        }
+        // Skip elapsed deadlines instead of emitting catch-up bursts.
+        if (now.QuadPart - due > frequency.QuadPart / 30) {
+            epoch.QuadPart = now.QuadPart - frameIndex * frequency.QuadPart / 30;
+        }
+        // A connection is not a running graph. Delivering in Connect races
+        // consumer initialization (notably FFmpeg's capture callback).
+        if (!m_pFilter->IsRunning() || m_bFlushing || !m_pMemInputPin || !m_pAllocator) {
             Sleep(10);
+            continue;
+        }
+        const DWORD64 availableTimestamp = *(volatile DWORD64*)&m_pSharedFrame->timestamp;
+        if (!availableTimestamp || availableTimestamp == lastTimestamp) {
+            Sleep(1);
             continue;
         }
         IMediaSample* pSample = NULL;
@@ -415,19 +454,21 @@ void COutputPin::DeliveryLoop() {
         DWORD w, h;
         DWORD64 ts;
         if (SharedMemory_ReadFrame(m_pSharedFrame, pData, m_mt.lSampleSize, &w, &h, &ts)) {
+            lastTimestamp = ts;
             InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_CONNECTED);
             REFERENCE_TIME start = m_rtNextSample;
-            REFERENCE_TIME end = start + 333333;
+            REFERENCE_TIME end = start + (10000000LL * (frameIndex + 1) / 30 - 10000000LL * frameIndex / 30);
             m_rtNextSample = end;
             pSample->SetTime(&start, &end);
             pSample->SetSyncPoint(TRUE);
             pSample->SetDiscontinuity(FALSE);
             pSample->SetActualDataLength(m_mt.lSampleSize);
             m_pMemInputPin->Receive(pSample);
-            Sleep(33);
+            frameIndex++;
         } else {
-            Sleep(10);
+            Sleep(1);
         }
         pSample->Release();
     }
+    if (preciseSleep) timeEndPeriod(1);
 }

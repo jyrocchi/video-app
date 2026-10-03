@@ -1,25 +1,73 @@
-// h264-decoder.js
-// Decodifica H.264 desde el celular usando ffmpeg-static y entrega frames BGRA a NDI + virtual-cam.
-
+// One native decode, fixed 720p BGRA for NDI/DirectShow and native MJPEG for
+// the viewer/recorder. No BMP encoding, per-pixel JS conversion or JS JPEG encode.
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-const WIDTH = 640;
-const HEIGHT = 480;
-const FRAME_BYTES = WIDTH * HEIGHT * 4; // BGRA
-
+const WIDTH = 1280;
+const HEIGHT = 720;
+const FPS = 30;
+const FRAME_BYTES = WIDTH * HEIGHT * 4;
 let ffmpegPath;
 try {
   ffmpegPath = require('ffmpeg-static');
-  if (ffmpegPath && ffmpegPath.includes('app.asar')) {
-    ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+  if (ffmpegPath?.includes('app.asar')) ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+  if (ffmpegPath && !path.isAbsolute(ffmpegPath)) ffmpegPath = path.resolve(ffmpegPath);
+} catch (_) {}
+
+class RawFrameParser {
+  constructor(frameBytes, onFrame) {
+    this.buffer = Buffer.allocUnsafe(frameBytes);
+    this.used = 0;
+    this.onFrame = onFrame;
   }
-  if (ffmpegPath && !path.isAbsolute(ffmpegPath)) {
-    ffmpegPath = path.resolve(ffmpegPath);
+
+  push(chunk) {
+    let offset = 0;
+    while (offset < chunk.length) {
+      const count = Math.min(this.buffer.length - this.used, chunk.length - offset);
+      chunk.copy(this.buffer, this.used, offset, offset + count);
+      this.used += count;
+      offset += count;
+      if (this.used === this.buffer.length) {
+        // Valid only until the next frame: callbacks must copy if retaining it.
+        this.onFrame(this.buffer);
+        this.used = 0;
+      }
+    }
   }
-} catch (e) {
-  ffmpegPath = null;
+}
+
+class JpegFrameParser {
+  constructor(onFrame) {
+    this.onFrame = onFrame;
+    this.parts = [];
+    this.size = 0;
+    this.previous = -1;
+  }
+
+  push(chunk) {
+    let start = 0;
+    for (let i = 0; i < chunk.length; i++) {
+      const value = chunk[i];
+      if (this.previous === 0xff && value === 0xd9) {
+        this.parts.push(chunk.subarray(start, i + 1));
+        this.size += i + 1 - start;
+        this.onFrame(Buffer.concat(this.parts, this.size));
+        this.parts = [];
+        this.size = 0;
+        start = i + 1;
+      }
+      this.previous = value;
+    }
+    if (start < chunk.length) {
+      this.parts.push(chunk.subarray(start));
+      this.size += chunk.length - start;
+    }
+    if (this.size > 8 * 1024 * 1024) {
+      throw new Error('MJPEG frame exceeded bounded parser capacity');
+    }
+  }
 }
 
 class H264Decoder {
@@ -27,157 +75,144 @@ class H264Decoder {
     this.proc = null;
     this.ffmpegReady = false;
     this.lastError = null;
-    this.onFrame = null; // (bgraBuffer, width, height, timestampMs)
+    this.stderrTail = '';
+    this.waitingForConfig = true;
+    this.onFrame = null;
+    this.onJpeg = null;
     this.queueBytes = 0;
     this.peakQueueBytes = 0;
-    this.framesDecoded = 0;
     this.totalFramesDecoded = 0;
+    this.totalJpegFrames = 0;
     this.decodedFps = 0;
+    this.lastFrameAt = 0;
     this.fpsWindowFrames = 0;
     this.fpsWindowStartedAt = Date.now();
-    this.lastReport = Date.now();
-    this.startedAt = 0;
   }
 
   start() {
     if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
       this.lastError = 'ffmpeg-static no encontrado';
-      console.error(this.lastError);
       return false;
     }
     if (this.proc) return true;
-
+    this.lastError = null;
+    this.stderrTail = '';
+    this.waitingForConfig = true;
+    this.queueBytes = 0;
+    const scale = `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${WIDTH}:${HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
     const args = [
-      '-loglevel', 'warning',
-      '-probesize', '32',
-      '-analyzeduration', '0',
-      '-fflags', '+genpts+flush_packets',
-      '-flags', 'low_delay',
-      '-threads', '1',
-      '-err_detect', 'ignore_err',
-      '-f', 'h264',
-      '-i', 'pipe:0',
-      '-pix_fmt', 'bgra',
-      '-s', `${WIDTH}x${HEIGHT}`,
-      '-f', 'rawvideo',
-      'pipe:1'
+      '-hide_banner', '-loglevel', 'warning',
+      '-probesize', '32', '-analyzeduration', '0',
+      '-fflags', '+genpts+flush_packets', '-flags', 'low_delay',
+      '-threads', '2', '-thread_type', 'slice',
+      '-framerate', String(FPS), '-reinit_filter', '0', '-f', 'h264', '-i', 'pipe:0',
+      '-filter_complex_threads', '2',
+      '-filter_complex', `[0:v]setpts=N/(${FPS}*TB),${scale},split=2[raw][preview]`,
+      '-map', '[raw]', '-an', '-c:v', 'rawvideo', '-threads', '1',
+      '-pix_fmt', 'bgra', '-fps_mode', 'passthrough', '-flush_packets', '1',
+      '-f', 'rawvideo', 'pipe:1',
+      '-map', '[preview]', '-an', '-c:v', 'mjpeg', '-threads', '2',
+      '-q:v', '5', '-pix_fmt', 'yuvj420p', '-fps_mode', 'passthrough',
+      '-flush_packets', '1', '-f', 'image2pipe', 'pipe:3'
     ];
-
     try {
-      this.proc = spawn(ffmpegPath, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true
+      const proc = spawn(ffmpegPath, args, {
+        stdio: ['pipe', 'pipe', 'pipe', 'pipe'], windowsHide: true
       });
-      this.startedAt = Date.now();
+      this.proc = proc;
       this.ffmpegReady = true;
-      console.log('H264 decoder started:', ffmpegPath);
-
-      this.proc.stderr.on('data', (d) => {
-        const msg = d.toString().trim();
-        if (msg) {
-          console.warn('[ffmpeg]', msg);
-        }
+      console.log('H264 decoder: native 1280x720@30 BGRA + MJPEG');
+      proc.stderr.on('data', data => {
+        const message = data.toString().trim();
+        this.stderrTail = (this.stderrTail + message + '\n').slice(-2000);
+        if (message) console.warn('[ffmpeg]', message);
       });
-
-      this.proc.on('error', (err) => {
-        console.error('ffmpeg process error:', err.message);
-        this.lastError = err.message;
+      proc.stdin.on('error', error => {
+        this.lastError = error.message;
         this.ffmpegReady = false;
       });
-
-      this.proc.on('exit', (code, signal) => {
-        console.log(`ffmpeg exited code=${code} signal=${signal}`);
+      proc.on('error', error => {
+        this.lastError = error.message;
+        this.ffmpegReady = false;
+      });
+      proc.on('exit', (code, signal) => {
+        if (this.proc !== proc) return;
         this.ffmpegReady = false;
         this.proc = null;
+        if (code !== 0) this.lastError = `FFmpeg exited ${code ?? signal}: ${this.stderrTail}`;
       });
-
-      this._consumeStdout();
+      const raw = new RawFrameParser(FRAME_BYTES, frame => {
+        this.totalFramesDecoded++;
+        this.lastFrameAt = Date.now();
+        this.fpsWindowFrames++;
+        const elapsed = this.lastFrameAt - this.fpsWindowStartedAt;
+        if (elapsed >= 1000) {
+          this.decodedFps = Number((this.fpsWindowFrames * 1000 / elapsed).toFixed(1));
+          this.fpsWindowFrames = 0;
+          this.fpsWindowStartedAt = this.lastFrameAt;
+        }
+        this.onFrame?.(frame, WIDTH, HEIGHT, this.lastFrameAt);
+      });
+      const jpeg = new JpegFrameParser(frame => {
+        this.totalJpegFrames++;
+        this.onJpeg?.(frame, WIDTH, HEIGHT, Date.now());
+      });
+      proc.stdout.on('data', chunk => raw.push(chunk));
+      proc.stdio[3].on('data', chunk => jpeg.push(chunk));
       return true;
-    } catch (e) {
-      this.lastError = e.message;
-      console.error('Failed to start ffmpeg:', e.message);
+    } catch (error) {
+      this.lastError = error.message;
       return false;
     }
   }
 
   pushH264(data) {
     if (!this.proc || !this.ffmpegReady) return false;
+    if (this.waitingForConfig) {
+      // A reconnect may start mid-GOP. Do not initialize FFmpeg with a slice
+      // referencing unavailable PPS; Android repeats SPS/PPS at every IDR.
+      let configOffset = -1;
+      for (let i = 0; i + 4 < data.length; i++) {
+        if (data[i] !== 0 || data[i + 1] !== 0) continue;
+        const startBytes = data[i + 2] === 1 ? 3 :
+          (data[i + 2] === 0 && data[i + 3] === 1 ? 4 : 0);
+        if (startBytes && (data[i + startBytes] & 0x1f) === 7) { configOffset = i; break; }
+      }
+      if (configOffset < 0) return true;
+      data = data.subarray(configOffset);
+      this.waitingForConfig = false;
+    }
+    this.queueBytes += data.length;
+    this.peakQueueBytes = Math.max(this.peakQueueBytes, this.queueBytes);
     try {
-      const proc = this.proc;
-      this.queueBytes += data.length;
-      this.peakQueueBytes = Math.max(this.peakQueueBytes, this.queueBytes);
-      const ok = proc.stdin.write(data, () => {
+      return this.proc.stdin.write(data, () => {
         this.queueBytes = Math.max(0, this.queueBytes - data.length);
       });
-      return ok;
-    } catch (e) {
-      this.lastError = e.message;
+    } catch (error) {
+      this.queueBytes = Math.max(0, this.queueBytes - data.length);
+      this.lastError = error.message;
       return false;
     }
   }
 
   getStats() {
     return {
-      queueBytes: this.queueBytes,
-      peakQueueBytes: this.peakQueueBytes,
-      decodedFps: this.decodedFps,
-      framesDecoded: this.totalFramesDecoded
+      width: WIDTH, height: HEIGHT, targetFps: FPS,
+      queueBytes: this.queueBytes, peakQueueBytes: this.peakQueueBytes,
+      decodedFps: Date.now() - this.lastFrameAt < 2000 ? this.decodedFps : 0,
+      framesDecoded: this.totalFramesDecoded, jpegFrames: this.totalJpegFrames,
+      error: this.lastError
     };
   }
 
-  _consumeStdout() {
-    if (!this.proc) return;
-    let leftover = null;
-    this.proc.stdout.on('data', (chunk) => {
-      const buf = leftover ? Buffer.concat([leftover, chunk]) : chunk;
-      const frames = Math.floor(buf.length / FRAME_BYTES);
-      const remainder = buf.length % FRAME_BYTES;
-      for (let i = 0; i < frames; i++) {
-        const offset = i * FRAME_BYTES;
-        const frameBuf = Buffer.from(buf.buffer, buf.byteOffset + offset, FRAME_BYTES);
-        this.framesDecoded++;
-        this.totalFramesDecoded++;
-        this.fpsWindowFrames++;
-        const fpsNow = Date.now();
-        const fpsElapsed = fpsNow - this.fpsWindowStartedAt;
-        if (fpsElapsed >= 1000) {
-          this.decodedFps = Math.round(this.fpsWindowFrames * 1000 / fpsElapsed);
-          this.fpsWindowFrames = 0;
-          this.fpsWindowStartedAt = fpsNow;
-        }
-        if (this.onFrame) {
-          try {
-            this.onFrame(frameBuf, WIDTH, HEIGHT, Date.now());
-          } catch (e) {
-            console.warn('onFrame error:', e.message);
-          }
-        }
-      }
-      leftover = remainder > 0 ? Buffer.from(buf.buffer, buf.byteOffset + frames * FRAME_BYTES, remainder) : null;
-
-      const now = Date.now();
-      if (now - this.lastReport >= 5000) {
-        const elapsed = (now - this.startedAt) / 1000;
-        console.log(`decoded ${this.framesDecoded} frames in ${elapsed.toFixed(1)}s = ${(this.framesDecoded/elapsed).toFixed(1)} fps`);
-        this.framesDecoded = 0;
-        this.lastReport = now;
-        this.startedAt = now;
-      }
-    });
-  }
-
   stop() {
-    if (!this.proc) return;
-    try {
-      this.proc.stdin.end();
-    } catch (_) {}
-    try {
-      this.proc.kill();
-    } catch (_) {}
+    const proc = this.proc;
     this.proc = null;
     this.ffmpegReady = false;
-    console.log('H264 decoder stopped');
+    if (!proc) return;
+    try { proc.stdin.end(); } catch (_) {}
+    try { proc.kill(); } catch (_) {}
   }
 }
 
-module.exports = { H264Decoder, WIDTH, HEIGHT, FRAME_BYTES };
+module.exports = { H264Decoder, RawFrameParser, JpegFrameParser, WIDTH, HEIGHT, FPS, FRAME_BYTES };

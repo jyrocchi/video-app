@@ -8,6 +8,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.delay
 import java.io.DataOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -32,6 +34,7 @@ class FrameUploader(private val baseUrl: String) {
     private val reconnects = AtomicInteger(0)
     private val avgStreamWriteMs = AtomicLong(0)
     private val streamBytesSent = AtomicLong(0)
+    private var nextWriteNs = 0L
     @Volatile private var streamConnection: HttpURLConnection? = null
     private var streamOutput: DataOutputStream? = null
     @Volatile private var started = false
@@ -42,7 +45,7 @@ class FrameUploader(private val baseUrl: String) {
     fun start(workerCount: Int = WORKER_COUNT) {
         if (started) return
         started = true
-        val n = workerCount.coerceIn(1, 8)
+        val n = if (h264Mode) 1 else workerCount.coerceIn(1, 8)
         repeat(n) { workerId ->
             workers.add(scope.launch {
                 Log.i(TAG, "Worker $workerId started")
@@ -58,8 +61,18 @@ class FrameUploader(private val baseUrl: String) {
                     val queueWaitMs = (SystemClock.elapsedRealtimeNanos() - packet.enqueuedAtNs) / 1_000_000L
                     updateAverage(avgQueueWaitMs, queueWaitMs)
                     try {
-                        if (h264Mode && supportsStreaming()) sendH264(packet.data)
-                        else sendWithRetry(packet.data)
+                        if (h264Mode) {
+                            // Unknown (temporary probe failure) is not an older PC.
+                            // Keep this NAL and wait for capability negotiation;
+                            // otherwise the first SPS/PPS could be lost to a 404.
+                            while (!stopped && streamingSupported == null) {
+                                supportsStreaming()
+                                if (streamingSupported == null) delay(100)
+                            }
+                            if (stopped) return@launch
+                            if (streamingSupported == true) sendH264(packet.data)
+                            else sendWithRetry(packet.data)
+                        } else sendWithRetry(packet.data)
                     } finally {
                         sending.set(false)
                     }
@@ -106,13 +119,18 @@ class FrameUploader(private val baseUrl: String) {
                     doOutput = true
                     useCaches = false
                     setRequestProperty("Content-Type", "application/x-h264-framed")
-                    setChunkedStreamingMode(1024)
+                    setChunkedStreamingMode(16 * 1024)
                 }
                 streamConnection = c
                 streamOutput = DataOutputStream(c.outputStream)
                 StreamStats.addLog("Flujo H.264 persistente conectado")
             }
             // Each Annex-B NAL is length-prefixed; the desktop reassembles HTTP chunks.
+            // Pace the compressed transport at <=8Mbps; never throw away reference NALs.
+            val nowNs = SystemClock.elapsedRealtimeNanos()
+            val waitNs = nextWriteNs - nowNs
+            if (waitNs > 0) Thread.sleep(waitNs / 1_000_000L, (waitNs % 1_000_000L).toInt())
+            nextWriteNs = maxOf(nextWriteNs, nowNs) + (data.size + 4L) * 8L * 1_000_000_000L / MAX_BITRATE
             streamOutput!!.writeInt(data.size)
             streamOutput!!.write(data)
             streamOutput!!.flush()
@@ -198,6 +216,14 @@ class FrameUploader(private val baseUrl: String) {
         peakQueuedBytes.updateAndGet { peak -> maxOf(peak, bytes) }
         val r = frameChannel.trySend(packet)
         if (r.isFailure) {
+            if (h264Mode && !stopped) {
+                // Backpressure the dedicated codec drain thread instead of corrupting
+                // the predictive H.264 stream by dropping arbitrary NAL units.
+                try {
+                    runBlocking { frameChannel.send(packet) }
+                    return
+                } catch (_: Exception) {}
+            }
             queuedPackets.decrementAndGet()
             queuedBytes.addAndGet(-data.size.toLong())
             Log.d(TAG, "Upload dropped (channel full)")
@@ -231,5 +257,6 @@ class FrameUploader(private val baseUrl: String) {
         private const val WORKER_COUNT = 1
         private const val CHANNEL_CAPACITY = 12
         private const val MAX_ATTEMPTS = 2
+        private const val MAX_BITRATE = 8_000_000L
     }
 }

@@ -7,7 +7,7 @@ CFilter::CFilter() : m_cRef(1), m_State(State_Stopped), m_pClock(NULL),
 }
 
 CFilter::~CFilter() {
-    if (m_pOutputPin) m_pOutputPin->Release();
+    if (m_pOutputPin) { m_pOutputPin->Shutdown(); m_pOutputPin->Release(); }
     if (m_pClock) m_pClock->Release();
     if (m_pName) CoTaskMemFree(m_pName);
 }
@@ -134,7 +134,7 @@ STDMETHODIMP CFilter::JoinFilterGraph(IFilterGraph* pGraph, LPCWSTR pName) {
     if (pName && !m_pName) {
         size_t len = wcslen(pName) + 1;
         m_pName = (LPWSTR)CoTaskMemAlloc(len * sizeof(WCHAR));
-        wcscpy(m_pName, pName);
+        wcscpy_s(m_pName, len, pName);
     }
     return S_OK;
 }
@@ -142,7 +142,7 @@ STDMETHODIMP CFilter::JoinFilterGraph(IFilterGraph* pGraph, LPCWSTR pName) {
 STDMETHODIMP CFilter::QueryVendorInfo(LPWSTR* pVendorInfo) {
     if (!pVendorInfo) return E_POINTER;
     *pVendorInfo = (LPWSTR)CoTaskMemAlloc(32 * sizeof(WCHAR));
-    wcscpy(*pVendorInfo, L"JyroCam");
+    wcscpy_s(*pVendorInfo, 32, L"JyroCam");
     return S_OK;
 }
 

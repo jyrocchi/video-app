@@ -33,10 +33,11 @@ public:
     STDMETHODIMP Unregister() override { return S_OK; }
 
     static HRESULT CreateInstance(CFilter** ppFilter);
+    BOOL IsRunning() const { return m_State == State_Running; }
 
 private:
     LONG m_cRef;
-    FILTER_STATE m_State;
+    volatile FILTER_STATE m_State;
     IReferenceClock* m_pClock;
     IFilterGraph* m_pGraph;
     COutputPin* m_pOutputPin;

@@ -14,10 +14,8 @@
     <string name="fps_label">FPS</string>
     <string name="facing_back">Trasera</string>
     <string name="facing_front">Frontal</string>
-    <string name="rotate_0">Rotar 0°</string>
-    <string name="rotate_90">Rotar 90°</string>
-    <string name="rotate_180">Rotar 180°</string>
-    <string name="rotate_270">Rotar 270°</string>
+    <string name="rotate_0">Horizontal</string>
+    <string name="rotate_90">Vertical</string>
     <string name="mirror_off">Espejo off</string>
     <string name="mirror_on">Espejo on</string>
     <string name="notification_title">JyroCam transmitiendo</string>

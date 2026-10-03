@@ -46,13 +46,18 @@ extern "C" BOOL SharedMemory_ReadFrame(SharedFrame* frame, BYTE* dest, DWORD des
                                         DWORD* outWidth, DWORD* outHeight, DWORD64* outTimestamp) {
     if (!frame) return FALSE;
     if (frame->magic != SHARED_FRAME_MAGIC) return FALSE;
+    const DWORD64 timestamp = *(volatile DWORD64*)&frame->timestamp;
+    if (!timestamp) return FALSE;
+    MemoryBarrier();
     if (frame->width != SHARED_FRAME_WIDTH || frame->height != SHARED_FRAME_HEIGHT ||
         frame->stride != SHARED_FRAME_WIDTH * 3 ||
         frame->dataSize != SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT * 3 ||
         frame->dataSize > destSize) return FALSE;
     memcpy(dest, frame->data, frame->dataSize);
+    MemoryBarrier();
+    if (timestamp != *(volatile DWORD64*)&frame->timestamp) return FALSE;
     if (outWidth) *outWidth = frame->width;
     if (outHeight) *outHeight = frame->height;
-    if (outTimestamp) *outTimestamp = frame->timestamp;
+    if (outTimestamp) *outTimestamp = timestamp;
     return TRUE;
 }

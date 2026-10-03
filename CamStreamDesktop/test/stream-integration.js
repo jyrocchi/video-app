@@ -139,7 +139,7 @@ async function run() {
 
   const ffmpeg = require('ffmpeg-static');
   const source = spawn(ffmpeg, [
-    '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=640x480:rate=15',
+    '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30',
     '-frames:v', '45', '-c:v', 'libx264', '-preset', 'ultrafast',
     '-tune', 'zerolatency', '-f', 'h264', 'pipe:1'
   ]);
@@ -200,7 +200,9 @@ async function run() {
   }
   assert.ok(decodedFrames >= decodedBeforeStream + 12,
     'Too few decoded frames reached the recorder');
-  assert.equal(jpeg.decode(Buffer.from(frame.b64, 'base64')).width, 640);
+   const decodedJpeg = jpeg.decode(Buffer.from(frame.b64, 'base64'));
+   assert.equal(decodedJpeg.width, 1280);
+   assert.equal(decodedJpeg.height, 720);
   const status = JSON.parse((await request('/status')).body);
   assert.equal(status.connected, true);
   assert.ok(status.h264.requests > 0, 'H264 ingress metrics were not recorded');

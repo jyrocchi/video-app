@@ -34,10 +34,10 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastConnectionState: Boolean? = null
     @Volatile private var lastPcLogAtMs = 0L
 
-    private val qualityOptions = arrayOf("Baja (50)", "Media (70)", "Alta (85)")
-    private val qualityValues = intArrayOf(50, 70, 85)
-    private val fpsOptions = arrayOf("10", "20", "30")
-    private val fpsValues = intArrayOf(10, 20, 30)
+    private val qualityOptions = arrayOf("6000 kbps · máx. 8000")
+    private val qualityValues = intArrayOf(85)
+    private val fpsOptions = arrayOf("30")
+    private val fpsValues = intArrayOf(30)
 
     private val permissions = mutableListOf(Manifest.permission.CAMERA).apply {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
     ) { result ->
         if (result[Manifest.permission.CAMERA] == true) {
             setStatus(R.string.status_idle, false)
+            bindPreview()
         } else {
             setStatus(R.string.status_camera_required, false)
         }
@@ -61,7 +62,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.urlInput.setText(loadUrl())
-        rotationStep = loadRotation()
+        rotationStep = 0
         mirrorEnabled = loadMirror()
         updateRotateLabel()
         updateMirrorLabel()
@@ -70,14 +71,19 @@ class MainActivity : AppCompatActivity() {
 
         binding.qualitySpinner.adapter = ArrayAdapter(this,
             android.R.layout.simple_spinner_dropdown_item, qualityOptions)
+        binding.rotateButton.isEnabled = false
+        binding.rotateButton.visibility = android.view.View.GONE
+        binding.qualitySpinner.isEnabled = false
+        binding.fpsSpinner.isEnabled = false
         binding.fpsSpinner.adapter = ArrayAdapter(this,
             android.R.layout.simple_spinner_dropdown_item, fpsOptions)
         binding.qualitySpinner.setSelection(qualityValues.indexOf(85))
-        binding.fpsSpinner.setSelection(fpsValues.indexOf(20))
+        binding.fpsSpinner.setSelection(0)
         renderStatsSummary()
 
         binding.startButton.setOnClickListener { onToggle() }
         binding.facingButton.setOnClickListener {
+            if (!binding.facingButton.isEnabled) return@setOnClickListener
             facingBack = !facingBack
             binding.facingButton.setText(if (facingBack) R.string.facing_back else R.string.facing_front)
             if (streaming) {
@@ -85,13 +91,6 @@ class MainActivity : AppCompatActivity() {
             } else {
                 bindPreview()
             }
-        }
-        binding.rotateButton.setOnClickListener {
-            rotationStep = (rotationStep + 90) % 360
-            saveRotation(rotationStep)
-            updateRotateLabel()
-            applyPreviewTransform()
-            if (streaming) StreamService.updateTransform(this, rotationStep, mirrorEnabled, facingBack)
         }
         binding.mirrorButton.setOnClickListener {
             mirrorEnabled = !mirrorEnabled
@@ -114,12 +113,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateRotateLabel() {
-        binding.rotateButton.setText(when (rotationStep) {
-            0 -> R.string.rotate_0
-            90 -> R.string.rotate_90
-            180 -> R.string.rotate_180
-            else -> R.string.rotate_270
-        })
+        binding.rotateButton.setText(
+            if (rotationStep == 0) R.string.rotate_0 else R.string.rotate_90)
     }
 
     private fun updateMirrorLabel() {
@@ -134,6 +129,8 @@ class MainActivity : AppCompatActivity() {
         future.addListener({
             try {
                 val provider = future.get()
+                binding.facingButton.isEnabled = provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) &&
+                    provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
                 val preview = CameraPreview.Builder().build().also {
                     it.setSurfaceProvider(binding.previewView.surfaceProvider)
                 }
@@ -189,7 +186,7 @@ class MainActivity : AppCompatActivity() {
             val quality = qualityValues[binding.qualitySpinner.selectedItemPosition]
             val fps = fpsValues[binding.fpsSpinner.selectedItemPosition]
             StreamStats.clearLog()
-            StreamStats.addLog("Iniciando transmisión: objetivo ${fps}fps, calidad $quality")
+            StreamStats.addLog("Iniciando transmisión: 1280×720 ${fps}fps, 6000kbps (máx. 8000)")
             lastConnectionState = null
             lastPcLogAtMs = 0L
             streaming = true
@@ -231,7 +228,8 @@ class MainActivity : AppCompatActivity() {
         val fps = if (streaming) StreamStats.activeFps.get() ?: "—" else "—"
         val delay = StreamStats.uploadDelayMs.get().takeIf { streaming && it >= 0 }
             ?.let { "$it ms" } ?: "—"
-        binding.statsText.text = "Estado: $status\nResolución: $resolution   FPS activos: $fps\nDelay envío: $delay"
+        val error = StreamStats.lastError.get()?.takeIf { streaming }?.let { "\nAviso: $it" }.orEmpty()
+        binding.statsText.text = "Estado: $status\nResolución: $resolution   FPS activos: $fps\nDelay envío: $delay$error"
     }
 
     private fun startStatsPolling() {
@@ -330,8 +328,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadRotation(): Int =
-        getSharedPreferences("camstream_prefs", MODE_PRIVATE)
-            .getInt("rotation_step", 0)
+        if (getSharedPreferences("camstream_prefs", MODE_PRIVATE)
+                .getInt("rotation_step", 0) % 180 == 0) 0 else 90
 
     private fun saveMirror(v: Boolean) {
         getSharedPreferences("camstream_prefs", MODE_PRIVATE).edit()

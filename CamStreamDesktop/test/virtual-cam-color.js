@@ -9,8 +9,8 @@ Module._load = function (request, parent, isMain) {
 const VirtualCamWriter = require('../virtual-cam-writer');
 Module._load = originalLoad;
 
-const width = 640;
-const height = 480;
+const width = 1280;
+const height = 720;
 const offset = 32;
 const rgbBytes = width * height * 3;
 const rgbaBytes = width * height * 4;
@@ -19,9 +19,11 @@ function makeWriter() {
   const writer = Object.create(VirtualCamWriter.prototype);
   writer.opened = true;
   writer.staging = Buffer.alloc(offset + rgbBytes);
-  writer.view = Buffer.alloc(offset + rgbBytes);
+  const mapped = Buffer.alloc(offset + rgbBytes);
+  writer.view = 0x10000n;
   writer.headerSnapshot = Buffer.alloc(32);
-  writer.RtlMoveMemory = (destination, source, size) => source.copy(destination, 0, 0, size);
+  writer.RtlMoveMemory = (destination, source, size) => source.copy(
+    typeof destination === 'bigint' ? mapped.subarray(Number(destination - 0x10000n)) : destination, 0, 0, size);
   return writer;
 }
 
@@ -57,10 +59,11 @@ assert.equal(statusWriter.isConnected(), false);
 const sharedFrameSize = 32 + width * height * 3;
 const mappedFrame = Buffer.alloc(sharedFrameSize);
 const mappedWriter = Object.create(VirtualCamWriter.prototype);
-mappedWriter.view = mappedFrame;
+mappedWriter.view = 0x10000n;
 mappedWriter.staging = Buffer.alloc(sharedFrameSize);
 mappedWriter.headerSnapshot = Buffer.alloc(32);
-mappedWriter.RtlMoveMemory = (destination, source, size) => source.copy(destination, 0, 0, size);
+mappedWriter.RtlMoveMemory = (destination, source, size) => source.copy(
+  typeof destination === 'bigint' ? mappedFrame.subarray(Number(destination - 0x10000n)) : destination, 0, 0, size);
 mappedFrame.writeUInt32LE(1, 16);
 mappedWriter.flushToSharedMemory();
 assert.equal(mappedFrame.readUInt32LE(16), 1, 'Publishing a frame must preserve DirectShow connection state');

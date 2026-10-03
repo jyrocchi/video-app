@@ -55,7 +55,8 @@ class NdiSender {
     const settings = {
       p_ndi_name: name,
       p_groups: '',
-      clock_video: true,
+      // The camera is the 30fps clock. A second NDI clock blocks the Node loop.
+      clock_video: false,
       clock_audio: false
     };
 
@@ -86,16 +87,22 @@ class NdiSender {
     this.width = 0;
     this.height = 0;
     this.bgraBuffer = null;
+    this.bgraBuffers = null;
+    this.bufferIndex = 0;
     this.lib = lib;
   }
 
   sendBgra(bgraBuffer, width, height) {
     if (!this.pSend) return;
     if (width !== this.width || height !== this.height || !this.bgraBuffer) {
+      this.NDIlib_send_send_video_async_v2(this.pSend, null);
       this.width = width;
       this.height = height;
-      this.bgraBuffer = Buffer.allocUnsafe(width * height * 4);
+      this.bgraBuffers = [Buffer.allocUnsafe(width * height * 4), Buffer.allocUnsafe(width * height * 4)];
+      this.bufferIndex = 0;
     }
+    this.bgraBuffer = this.bgraBuffers[this.bufferIndex];
+    this.bufferIndex ^= 1;
     bgraBuffer.copy(this.bgraBuffer, 0, 0, width * height * 4);
 
     const frame = {
@@ -122,39 +129,19 @@ class NdiSender {
     const h = decoded.height;
     const rgba = decoded.data;
 
-    if (w !== this.width || h !== this.height || !this.bgraBuffer) {
-      this.width = w;
-      this.height = h;
-      this.bgraBuffer = Buffer.allocUnsafe(w * h * 4);
-    }
-
+    const bgra = Buffer.allocUnsafe(w * h * 4);
     for (let i = 0; i < rgba.length; i += 4) {
-      this.bgraBuffer[i] = rgba[i + 2];     // B
-      this.bgraBuffer[i + 1] = rgba[i + 1]; // G
-      this.bgraBuffer[i + 2] = rgba[i];     // R
-      this.bgraBuffer[i + 3] = rgba[i + 3]; // A
+      bgra[i] = rgba[i + 2];
+      bgra[i + 1] = rgba[i + 1];
+      bgra[i + 2] = rgba[i];
+      bgra[i + 3] = rgba[i + 3];
     }
-
-    const frame = {
-      xres: w,
-      yres: h,
-      FourCC: FOURCC_BGRA,
-      frame_rate_N: 30,
-      frame_rate_D: 1,
-      picture_aspect_ratio: w / h,
-      frame_format_type: 1, // progressive
-      timecode: Date.now() * 10000, // NDI timecode (100ns units)
-      p_data: this.bgraBuffer,
-      line_stride_in_bytes: w * 4,
-      p_metadata: '',
-      timestamp: Date.now() * 10000
-    };
-
-    this.NDIlib_send_send_video_async_v2(this.pSend, frame);
+    this.sendBgra(bgra, w, h);
   }
 
   close() {
     if (this.pSend) {
+      try { this.NDIlib_send_send_video_async_v2(this.pSend, null); } catch (_) {}
       try { this.NDIlib_send_destroy(this.pSend); } catch (_) {}
       this.pSend = null;
     }

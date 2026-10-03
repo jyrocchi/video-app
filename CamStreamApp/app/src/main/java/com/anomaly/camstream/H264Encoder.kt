@@ -17,14 +17,15 @@ class H264Encoder(
     @Volatile private var codecError: String? = null
 
     private val encoder: MediaCodec
+    private val codecLock = Any()
+    private data class CodecOutput(val data: ByteArray? = null, val flags: Int = 0,
+                                   val headers: List<ByteArray> = emptyList())
     private val colorFormat: Int
+    private val bitrateMode: Int
     private val bufferInfo = MediaCodec.BufferInfo()
+    private val framePacker = YuvFramePacker(width, height)
     @Volatile private var started = false
     @Volatile private var drainThread: Thread? = null
-    private val yRow = ByteArray(width)
-    private val uRow = ByteArray(width / 2)
-    private val vRow = ByteArray(width / 2)
-    private val uvRow = ByteArray(width)
     private val transformedY = ByteArray(width * height)
     private val transformedU = ByteArray(width / 2 * (height / 2))
     private val transformedV = ByteArray(width / 2 * (height / 2))
@@ -38,11 +39,19 @@ class H264Encoder(
         private set
 
     var onEncodedNAL: ((ByteArray, Int, Int) -> Unit)? = null
+    private var spsNal: ByteArray? = null
+    private var ppsNal: ByteArray? = null
 
     init {
         val mime = MediaFormat.MIMETYPE_VIDEO_AVC
         encoder = MediaCodec.createEncoderByType(mime)
-        val supported = encoder.codecInfo.getCapabilitiesForType(mime).colorFormats
+        require(bitrate in 1..8_000_000) { "Bitrate AVC fuera del límite de 8000kbps" }
+        val capabilities = encoder.codecInfo.getCapabilitiesForType(mime)
+        val supported = capabilities.colorFormats
+        bitrateMode = if (capabilities.encoderCapabilities?.isBitrateModeSupported(
+                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true) {
+            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+        } else MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
         colorFormat = when {
             MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar in supported ->
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
@@ -53,6 +62,7 @@ class H264Encoder(
         val format = MediaFormat.createVideoFormat(mime, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+            setInteger(MediaFormat.KEY_BITRATE_MODE, bitrateMode)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameIntervalSec)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
@@ -62,12 +72,20 @@ class H264Encoder(
         encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
     }
 
-    fun start() {
-        if (started) return
+    fun start(): Unit = synchronized(codecLock) {
+        if (stopped || started) return@synchronized
         encoder.start()
         started = true
         drainThread = Thread({
-            while (started && !stopped) drainEncoder(false)
+            while (started && !stopped) {
+                drainEncoder(false)
+                // Yield outside codecLock so input submission is not starved
+                // by repeated empty output polls.
+                if (!stopped) try { Thread.sleep(1) } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
         }, "H264OutputDrain").apply {
             priority = Thread.NORM_PRIORITY
             start()
@@ -79,17 +97,17 @@ class H264Encoder(
                     yRowStride: Int, uRowStride: Int, vRowStride: Int,
                     uPixelStride: Int, vPixelStride: Int,
                     sourceWidth: Int = width, sourceHeight: Int = height,
-                    rotation: Int = 0, mirror: Boolean = false) {
-        if (!started || stopped) return
+                    rotation: Int = 0, mirror: Boolean = false): Unit = synchronized(codecLock) {
+        if (!started || stopped) return@synchronized
         try {
             val inputWaitStartNs = System.nanoTime()
             val inputIdx = encoder.dequeueInputBuffer(0)
             lastInputWaitUs = (System.nanoTime() - inputWaitStartNs) / 1_000L
             if (inputIdx < 0) {
                 inputStarveCount.incrementAndGet()
-                return
+                return@synchronized
             }
-            val inputBuf = encoder.getInputBuffer(inputIdx) ?: return
+            val inputBuf = encoder.getInputBuffer(inputIdx) ?: return@synchronized
 
             val ySize = width * height
             val uvWidth = width / 2
@@ -102,7 +120,12 @@ class H264Encoder(
 
             val copyStartNs = System.nanoTime()
             val normalizedRotation = ((rotation % 360) + 360) % 360
-            if (normalizedRotation != 0 || mirror) {
+            if (normalizedRotation == 0 && sourceWidth == width && sourceHeight == height) {
+                framePacker.pack(inputBuf, yPlane, uPlane, vPlane,
+                    yRowStride, uRowStride, vRowStride, uPixelStride, vPixelStride,
+                    colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
+                    mirror)
+            } else {
                 copyTransformedPlane(transformedY, yPlane, sourceWidth, sourceHeight,
                     yRowStride, 1, width, height, normalizedRotation, mirror)
                 inputBuf.put(transformedY, 0, ySize)
@@ -123,51 +146,6 @@ class H264Encoder(
                     inputBuf.put(transformedUv, 0, 2 * uvWidth * uvHeight)
                 }
                 check(inputBuf.position() - chromaOutputStart == 2 * uvWidth * uvHeight)
-            } else {
-                val ySource = yPlane.duplicate()
-                val yBase = ySource.position()
-                if (yRowStride == width) {
-                    ySource.limit(yBase + ySize)
-                    inputBuf.put(ySource)
-                } else {
-                    for (row in 0 until height) {
-                        ySource.position(yBase + row * yRowStride)
-                        ySource.get(yRow, 0, width)
-                        inputBuf.put(yRow, 0, width)
-                    }
-                }
-
-                // CameraX chroma may have pixelStride=2. Pack U/V according to the
-                // actual format supported by this device's hardware encoder.
-                if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
-                    copyPlanarPlane(inputBuf, uPlane, uRowStride, uPixelStride, uRow, uvWidth, uvHeight)
-                    copyPlanarPlane(inputBuf, vPlane, vRowStride, vPixelStride, vRow, uvWidth, uvHeight)
-                } else {
-                    val uBase = uPlane.position()
-                    val vBase = vPlane.position()
-                    for (row in 0 until uvHeight) {
-                        val uStart = uBase + row * uRowStride
-                        val vStart = vBase + row * vRowStride
-                        // Common CameraX layout is NV12: U and V views of the same
-                        // interleaved chroma. Copy the contiguous bytes in one go.
-                        val interleaved = uPixelStride == 2 && vPixelStride == 2 &&
-                            uPlane.get(uStart + 1) == vPlane.get(vStart) &&
-                            uPlane.get(uStart + uvWidth - 1) == vPlane.get(vStart + uvWidth - 2)
-                        if (interleaved) {
-                            val source = uPlane.duplicate()
-                            source.position(uStart)
-                            source.limit(uStart + width - 1)
-                            inputBuf.put(source)
-                            inputBuf.put(vPlane.get(vStart + width - 2))
-                        } else {
-                            for (col in 0 until uvWidth) {
-                                uvRow[col * 2] = uPlane.get(uStart + col * uPixelStride)
-                                uvRow[col * 2 + 1] = vPlane.get(vStart + col * vPixelStride)
-                            }
-                            inputBuf.put(uvRow, 0, width)
-                        }
-                    }
-                }
             }
             lastYuvCopyUs = (System.nanoTime() - copyStartNs) / 1_000L
 
@@ -193,27 +171,18 @@ class H264Encoder(
         mirror: Boolean
     ) {
         val base = plane.position()
-        if (rotation == 90 || rotation == 270) {
+        if ((rotation == 90 || rotation == 270) &&
+            sourceWidth == outputHeight && sourceHeight == outputWidth) {
             val tileSize = TRANSFORM_TILE_SIZE
             for (tileY in 0 until outputHeight step tileSize) {
                 val tileBottom = minOf(tileY + tileSize, outputHeight)
                 for (tileX in 0 until outputWidth step tileSize) {
                     val tileRight = minOf(tileX + tileSize, outputWidth)
-                    // Traverse each tile column first so source samples remain adjacent in memory.
                     for (col in tileX until tileRight) {
                         val outputX = if (mirror) outputWidth - 1 - col else col
-                        val sourceX: Int
-                        val sourceY: Int
-                        val rowStep: Int
-                        if (rotation == 90) {
-                            sourceX = tileY
-                            sourceY = sourceHeight - 1 - outputX
-                            rowStep = pixelStride
-                        } else {
-                            sourceX = sourceWidth - 1 - tileY
-                            sourceY = outputX
-                            rowStep = -pixelStride
-                        }
+                        val sourceX = if (rotation == 90) tileY else sourceWidth - 1 - tileY
+                        val sourceY = if (rotation == 90) sourceHeight - 1 - outputX else outputX
+                        val rowStep = if (rotation == 90) pixelStride else -pixelStride
                         var sourceIndex = base + sourceY * rowStride + sourceX * pixelStride
                         var outputIndex = tileY * outputWidth + col
                         for (row in tileY until tileBottom) {
@@ -224,22 +193,37 @@ class H264Encoder(
                     }
                 }
             }
+            return
+        }
+        val rotated = rotation == 90 || rotation == 270
+        val rotatedWidth = if (rotated) sourceHeight else sourceWidth
+        val rotatedHeight = if (rotated) sourceWidth else sourceHeight
+        val cropWidth: Int
+        val cropHeight: Int
+        if (rotatedWidth.toLong() * outputHeight > rotatedHeight.toLong() * outputWidth) {
+            cropWidth = rotatedHeight * outputWidth / outputHeight
+            cropHeight = rotatedHeight
         } else {
-            val firstOutputX = if (mirror) outputWidth - 1 else 0
-            for (row in 0 until outputHeight) {
-                val sourceX = if (rotation == 180) sourceWidth - 1 - firstOutputX else firstOutputX
-                val sourceY = if (rotation == 180) sourceHeight - 1 - row else row
-                val sourceStep = when {
-                    rotation == 180 && mirror -> pixelStride
-                    rotation == 180 || mirror -> -pixelStride
-                    else -> pixelStride
+            cropWidth = rotatedWidth
+            cropHeight = rotatedWidth * outputHeight / outputWidth
+        }
+        val cropLeft = (rotatedWidth - cropWidth) / 2
+        val cropTop = (rotatedHeight - cropHeight) / 2
+        for (row in 0 until outputHeight) {
+            val rotatedY = cropTop + row * cropHeight / outputHeight
+            val outputStart = row * outputWidth
+            for (col in 0 until outputWidth) {
+                val outputX = if (mirror) outputWidth - 1 - col else col
+                val rotatedX = cropLeft + outputX * cropWidth / outputWidth
+                val sourceX: Int
+                val sourceY: Int
+                when (rotation) {
+                    90 -> { sourceX = rotatedY; sourceY = sourceHeight - 1 - rotatedX }
+                    180 -> { sourceX = sourceWidth - 1 - rotatedX; sourceY = sourceHeight - 1 - rotatedY }
+                    270 -> { sourceX = sourceWidth - 1 - rotatedY; sourceY = rotatedX }
+                    else -> { sourceX = rotatedX; sourceY = rotatedY }
                 }
-                var sourceIndex = base + sourceY * rowStride + sourceX * pixelStride
-                val outputStart = row * outputWidth
-                for (col in 0 until outputWidth) {
-                    output[outputStart + col] = plane.get(sourceIndex)
-                    sourceIndex += sourceStep
-                }
+                output[outputStart + col] = plane.get(base + sourceY * rowStride + sourceX * pixelStride)
             }
         }
     }
@@ -261,7 +245,8 @@ class H264Encoder(
     ) {
         val uBase = uPlane.position()
         val vBase = vPlane.position()
-        if (rotation == 90 || rotation == 270) {
+        if ((rotation == 90 || rotation == 270) &&
+            sourceWidth == outputHeight && sourceHeight == outputWidth) {
             val tileSize = TRANSFORM_TILE_SIZE
             for (tileY in 0 until outputHeight step tileSize) {
                 val tileBottom = minOf(tileY + tileSize, outputHeight)
@@ -269,79 +254,57 @@ class H264Encoder(
                     val tileRight = minOf(tileX + tileSize, outputWidth)
                     for (col in tileX until tileRight) {
                         val outputX = if (mirror) outputWidth - 1 - col else col
-                        val sourceX: Int
-                        val sourceY: Int
-                        val rowStepU: Int
-                        val rowStepV: Int
-                        if (rotation == 90) {
-                            sourceX = tileY
-                            sourceY = sourceHeight - 1 - outputX
-                            rowStepU = uPixelStride
-                            rowStepV = vPixelStride
-                        } else {
-                            sourceX = sourceWidth - 1 - tileY
-                            sourceY = outputX
-                            rowStepU = -uPixelStride
-                            rowStepV = -vPixelStride
-                        }
+                        val sourceX = if (rotation == 90) tileY else sourceWidth - 1 - tileY
+                        val sourceY = if (rotation == 90) sourceHeight - 1 - outputX else outputX
+                        val uStep = if (rotation == 90) uPixelStride else -uPixelStride
+                        val vStep = if (rotation == 90) vPixelStride else -vPixelStride
                         var uIndex = uBase + sourceY * uRowStride + sourceX * uPixelStride
                         var vIndex = vBase + sourceY * vRowStride + sourceX * vPixelStride
                         var outputIndex = (tileY * outputWidth + col) * 2
                         for (row in tileY until tileBottom) {
                             output[outputIndex] = uPlane.get(uIndex)
                             output[outputIndex + 1] = vPlane.get(vIndex)
-                            uIndex += rowStepU
-                            vIndex += rowStepV
+                            uIndex += uStep
+                            vIndex += vStep
                             outputIndex += outputWidth * 2
                         }
                     }
                 }
             }
-        } else {
-            val firstOutputX = if (mirror) outputWidth - 1 else 0
-            for (row in 0 until outputHeight) {
-                val sourceX = if (rotation == 180) sourceWidth - 1 - firstOutputX else firstOutputX
-                val sourceY = if (rotation == 180) sourceHeight - 1 - row else row
-                val uStep = when {
-                    rotation == 180 && mirror -> uPixelStride
-                    rotation == 180 || mirror -> -uPixelStride
-                    else -> uPixelStride
-                }
-                val vStep = when {
-                    rotation == 180 && mirror -> vPixelStride
-                    rotation == 180 || mirror -> -vPixelStride
-                    else -> vPixelStride
-                }
-                var uIndex = uBase + sourceY * uRowStride + sourceX * uPixelStride
-                var vIndex = vBase + sourceY * vRowStride + sourceX * vPixelStride
-                val outputStart = row * outputWidth * 2
-                for (col in 0 until outputWidth) {
-                    output[outputStart + col * 2] = uPlane.get(uIndex)
-                    output[outputStart + col * 2 + 1] = vPlane.get(vIndex)
-                    uIndex += uStep
-                    vIndex += vStep
-                }
-            }
+            return
         }
-    }
-
-    private fun copyPlanarPlane(output: ByteBuffer, plane: ByteBuffer, rowStride: Int,
-                                pixelStride: Int, rowBytes: ByteArray, width: Int, height: Int) {
-        val source = plane.duplicate()
-        val base = source.position()
-        if (pixelStride == 1 && rowStride == width) {
-            source.limit(base + width * height)
-            output.put(source)
+        val rotated = rotation == 90 || rotation == 270
+        val rotatedWidth = if (rotated) sourceHeight else sourceWidth
+        val rotatedHeight = if (rotated) sourceWidth else sourceHeight
+        val cropWidth: Int
+        val cropHeight: Int
+        if (rotatedWidth.toLong() * outputHeight > rotatedHeight.toLong() * outputWidth) {
+            cropWidth = rotatedHeight * outputWidth / outputHeight
+            cropHeight = rotatedHeight
         } else {
-            for (row in 0 until height) {
-                val start = base + row * rowStride
-                if (pixelStride == 1) {
-                    source.position(start)
-                    source.get(rowBytes, 0, width)
-                } else {
-                    for (col in 0 until width) rowBytes[col] = source.get(start + col * pixelStride)
+            cropWidth = rotatedWidth
+            cropHeight = rotatedWidth * outputHeight / outputWidth
+        }
+        val cropLeft = (rotatedWidth - cropWidth) / 2
+        val cropTop = (rotatedHeight - cropHeight) / 2
+        for (row in 0 until outputHeight) {
+            val rotatedY = cropTop + row * cropHeight / outputHeight
+            val outputStart = row * outputWidth * 2
+            for (col in 0 until outputWidth) {
+                val outputX = if (mirror) outputWidth - 1 - col else col
+                val rotatedX = cropLeft + outputX * cropWidth / outputWidth
+                val sourceX: Int
+                val sourceY: Int
+                when (rotation) {
+                    90 -> { sourceX = rotatedY; sourceY = sourceHeight - 1 - rotatedX }
+                    180 -> { sourceX = sourceWidth - 1 - rotatedX; sourceY = sourceHeight - 1 - rotatedY }
+                    270 -> { sourceX = sourceWidth - 1 - rotatedY; sourceY = rotatedX }
+                    else -> { sourceX = rotatedX; sourceY = rotatedY }
                 }
-                output.put(rowBytes, 0, width)
+                val uIndex = uBase + sourceY * uRowStride + sourceX * uPixelStride
+                val vIndex = vBase + sourceY * vRowStride + sourceX * vPixelStride
+                output[outputStart + col * 2] = uPlane.get(uIndex)
+                output[outputStart + col * 2 + 1] = vPlane.get(vIndex)
             }
         }
     }
@@ -353,54 +316,59 @@ class H264Encoder(
     }
 
     private fun drainEncoder(endOfStream: Boolean) {
-        while (true) {
-            val timeoutUs = if (endOfStream) EOS_TIMEOUT_US else OUTPUT_TIMEOUT_US
-            val outIdx = try { encoder.dequeueOutputBuffer(bufferInfo, timeoutUs) }
-                       catch (e: Exception) { Log.w(TAG, "dequeueOutput err: ${e.message}"); return }
-            if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                if (!endOfStream) return
-            } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                try {
-                    val newFormat = encoder.outputFormat
-                    Log.i(TAG, "Encoder format changed (csd-0=${newFormat.containsKey("csd-0")} csd-1=${newFormat.containsKey("csd-1")})")
-                    val csd0 = newFormat.getByteBuffer("csd-0")
-                    val csd1 = newFormat.getByteBuffer("csd-1")
-                    Log.i(TAG, "csd-0 remaining=${csd0?.remaining()} csd-1 remaining=${csd1?.remaining()}")
-                    if (csd0 != null && csd0.remaining() > 0) {
-                        val raw = ByteArray(csd0.remaining())
-                        csd0.position(0)
-                        csd0.get(raw)
-                        val (off, len) = stripLeadingStartCode(raw)
-                        emitAnnexB(raw, off, len)
-                        Log.i(TAG, "SPS sent: ${len} raw bytes (${4+len} Annex-B) [${raw.take(8).joinToString { "0x%02x".format(it) }}]")
+        while (!stopped) {
+            // All codec access is serialized with stop/release and input submission.
+            // Copy and release output buffers BEFORE a network callback can block.
+            val output = try {
+                synchronized(codecLock) {
+                    if (stopped || !started) return
+                    val timeout = if (endOfStream) EOS_TIMEOUT_US else OUTPUT_TIMEOUT_US
+                    val index = encoder.dequeueOutputBuffer(bufferInfo, timeout)
+                    when {
+                        index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
+                        index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            val format = encoder.outputFormat
+                            val headers = listOf("csd-0", "csd-1").mapNotNull { key ->
+                                format.getByteBuffer(key)?.duplicate()?.let { buffer ->
+                                    ByteArray(buffer.remaining()).also { buffer.get(it) }
+                                }?.takeIf { it.isNotEmpty() }
+                            }
+                            CodecOutput(headers = headers)
+                        }
+                        index >= 0 -> {
+                            try {
+                                val buffer = encoder.getOutputBuffer(index)
+                                val data = if (buffer != null && bufferInfo.size > 0) {
+                                    buffer.position(bufferInfo.offset)
+                                    ByteArray(bufferInfo.size).also { buffer.get(it) }
+                                } else null
+                                CodecOutput(data, bufferInfo.flags)
+                            } finally { encoder.releaseOutputBuffer(index, false) }
+                        }
+                        else -> CodecOutput()
                     }
-                    if (csd1 != null && csd1.remaining() > 0) {
-                        val raw = ByteArray(csd1.remaining())
-                        csd1.position(0)
-                        csd1.get(raw)
-                        val (off, len) = stripLeadingStartCode(raw)
-                        emitAnnexB(raw, off, len)
-                        Log.i(TAG, "PPS sent: ${len} raw bytes (${4+len} Annex-B)")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "format change handler error: ${e.message}", e)
                 }
-            } else if (outIdx >= 0) {
-                val buf = encoder.getOutputBuffer(outIdx) ?: continue
-                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                    val csd = ByteArray(bufferInfo.size)
-                    buf.position(bufferInfo.offset)
-                    buf.get(csd, 0, bufferInfo.size)
-                    parseAndEmitCsds(csd)
-                } else if (bufferInfo.size > 0) {
-                    val raw = ByteArray(bufferInfo.size)
-                    buf.position(bufferInfo.offset)
-                    buf.get(raw, 0, bufferInfo.size)
-                    emitEncodedBuffer(raw)
-                }
-                encoder.releaseOutputBuffer(outIdx, false)
-                if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) return
+            } catch (e: Exception) {
+                if (!stopped) { codecError = e.message; Log.w(TAG, "drain error: ${e.message}") }
+                return
             }
+            if (stopped) return
+            for (header in output.headers) {
+                val (offset, length) = stripLeadingStartCode(header)
+                emitAnnexB(header, offset, length)
+            }
+            output.data?.let { data ->
+                if ((output.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                    parseAndEmitCsds(data)
+                } else {
+                    if ((output.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) {
+                        spsNal?.let { onEncodedNAL?.invoke(it, 0, it.size) }
+                        ppsNal?.let { onEncodedNAL?.invoke(it, 0, it.size) }
+                    }
+                    emitEncodedBuffer(data)
+                }
+            }
+            if ((output.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) return
         }
     }
 
@@ -492,6 +460,10 @@ class H264Encoder(
         val out = ByteArray(4 + length)
         out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 1
         System.arraycopy(data, offset, out, 4, length)
+        when (data[offset].toInt() and 0x1f) {
+            7 -> spsNal = out
+            8 -> ppsNal = out
+        }
         try {
             onEncodedNAL?.invoke(out, 0, out.size)
         } catch (e: Exception) {
@@ -500,19 +472,19 @@ class H264Encoder(
     }
 
     fun stop() {
-        if (stopped) return
-        stopped = true
+        val wasStarted = synchronized(codecLock) {
+            if (stopped) return
+            stopped = true
+            started.also { started = false }
+        }
         try { drainThread?.join(DRAIN_STOP_TIMEOUT_MS) } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         }
         drainThread = null
-        try {
-            if (started) {
-                encoder.stop()
-            }
-            encoder.release()
-        } catch (e: Exception) {
-            Log.w(TAG, "stop error: ${e.message}")
+        synchronized(codecLock) {
+            try { if (wasStarted) encoder.stop() }
+            catch (e: Exception) { Log.w(TAG, "stop error: ${e.message}") }
+            finally { try { encoder.release() } catch (e: Exception) { Log.w(TAG, "release error: ${e.message}") } }
         }
         Log.i(TAG, "H264 encoder stopped")
     }
@@ -520,7 +492,8 @@ class H264Encoder(
     fun getError(): String? = codecError
 
     fun configurationSummary(): String =
-        "codec=${encoder.codecInfo.name} color=$colorFormat bitrate=${bitrate / 1000}kbps"
+        "codec=${encoder.codecInfo.name} color=$colorFormat bitrate=${bitrate / 1000}kbps " +
+            "rateControl=${if (bitrateMode == MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) "CBR" else "VBR"}"
 
     fun timingSummary(): String =
         "in=${lastInputWaitUs}us yuv=${lastYuvCopyUs / 1000.0}ms submit=${lastSubmitUs}us " +
@@ -529,7 +502,7 @@ class H264Encoder(
     companion object {
         private const val TAG = "H264Encoder"
         private const val TRANSFORM_TILE_SIZE = 16
-        private const val OUTPUT_TIMEOUT_US = 10_000L
+        private const val OUTPUT_TIMEOUT_US = 1_000L
         private const val EOS_TIMEOUT_US = 10_000L
         private const val DRAIN_STOP_TIMEOUT_MS = 100L
     }

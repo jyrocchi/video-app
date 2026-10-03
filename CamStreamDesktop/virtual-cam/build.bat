@@ -23,7 +23,7 @@ cl /nologo /W3 /O2 /EHsc /std:c++17 /D_WIN32_WINNT=0x0601 ^
    /I"%VCToolsInstallDir%include" ^
    /LD /Fe:"%OUT%\JyroCamVirtualCam.dll" ^
    "%SRC%dllmain.cpp" "%SRC%filter.cpp" "%SRC%output_pin.cpp" "%SRC%shared_memory.cpp" ^
-   /link /DEF:"%SRC%CamStreamVirtualCam.def" strmiids.lib ole32.lib oleaut32.lib user32.lib advapi32.lib
+   /link /DEF:"%SRC%CamStreamVirtualCam.def" strmiids.lib ole32.lib oleaut32.lib user32.lib advapi32.lib winmm.lib
 
 if errorlevel 1 (
   echo Compilacion FALLIDA

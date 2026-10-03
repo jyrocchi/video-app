@@ -17,7 +17,11 @@
       <span class="sep">|</span>
       <span id="fpsText">-- fps</span>
       <span class="sep">|</span>
-      <span id="sizeText">-- KB</span>
+      <span id="resolutionText">1280×720</span>
+      <span class="sep">|</span>
+      <span id="bitrateText">-- kbps H.264</span>
+      <span class="sep">|</span>
+      <span id="sizeText">-- KB/cuadro</span>
     </div>
   </header>
 
@@ -62,6 +66,7 @@
 const $ = (id) => document.getElementById(id);
 const img = $('frame');
 img.addEventListener('load', () => {
+  $('resolutionText').textContent = `${img.naturalWidth}×${img.naturalHeight}`;
   requestAnimationFrame(() => window.api.frameRendered());
 });
 const placeholder = $('placeholder');
@@ -129,7 +134,7 @@ window.api.onEvent((payload) => {
     img.style.display = 'block';
     connDot.classList.add('on');
     connText.textContent = 'Conectado';
-    sizeText.textContent = Math.round(payload.size / 1024) + ' KB';
+    sizeText.textContent = Math.round(payload.size / 1024) + ' KB/cuadro';
   } else if (payload.type === 'fps') {
     fpsText.textContent = payload.value + ' fps';
   } else if (payload.type === 'stream-disconnected') {
@@ -138,8 +143,9 @@ window.api.onEvent((payload) => {
     placeholder.style.display = 'flex';
     connDot.classList.remove('on');
     connText.textContent = 'Sin señal';
+    $('bitrateText').textContent = '-- kbps H.264';
     fpsText.textContent = '-- fps';
-    sizeText.textContent = '-- KB';
+    sizeText.textContent = '-- KB/cuadro';
   } else if (payload.type === 'recording-started') {
     recording = true;
     recordingStart = Date.now();
@@ -240,6 +246,13 @@ setInterval(async () => {
   if (!info.ndi) ndiToggle.checked = false;
   updateVirtualCamButton(info);
 }, 3000);
+
+setInterval(async () => {
+  try {
+    const status = await (await fetch(`http://127.0.0.1:${portText.textContent}/status`)).json();
+    $('bitrateText').textContent = `${status.h264?.bitrateKbps || 0} kbps H.264`;
+  } catch (_) {}
+}, 1000);
 
 init();
 </script>

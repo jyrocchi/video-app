@@ -1,10 +1,11 @@
 const koffi = require('koffi');
 
 const SHARED_MEM_NAME = 'Local\\CamStreamVirtualCam_Frame';
-const FRAME_WIDTH = 640;
-const FRAME_HEIGHT = 480;
+const FRAME_WIDTH = 1280;
+const FRAME_HEIGHT = 720;
 const RGB_SIZE = FRAME_WIDTH * FRAME_HEIGHT * 3;
 const SHARED_FRAME_SIZE = 32 + RGB_SIZE;
+const ZERO_TIMESTAMP = Buffer.alloc(8);
 
 class VirtualCamWriter {
   constructor() {
@@ -70,7 +71,7 @@ class VirtualCamWriter {
   }
 
   write(rgba, w, h) {
-    if (!this.opened) return false;
+    if (!this.opened || w !== FRAME_WIDTH || h !== FRAME_HEIGHT) return false;
     try {
       const dw = FRAME_WIDTH, dh = FRAME_HEIGHT;
       const sw = w, sh = h;
@@ -101,7 +102,7 @@ class VirtualCamWriter {
   }
 
   writeBgra(bgra, w, h) {
-    if (!this.opened) return false;
+    if (!this.opened || w !== FRAME_WIDTH || h !== FRAME_HEIGHT || bgra.length !== w * h * 4) return false;
     try {
       const dw = FRAME_WIDTH, dh = FRAME_HEIGHT;
       const sw = w, sh = h;
@@ -110,14 +111,15 @@ class VirtualCamWriter {
 
       for (let y = 0; y < dh; y++) {
         // FFmpeg supplies top-down BGRA; DirectShow RGB24 expects bottom-up BGR.
-        const srcY = sh - 1 - Math.floor(y * sh / dh);
+        const srcY = sh - 1 - y;
+        let srcIdx = srcY * sw * 4;
+        let dstIdx = offset + y * dw * 3;
         for (let x = 0; x < dw; x++) {
-          const srcX = Math.floor(x * sw / dw);
-          const srcIdx = (srcY * sw + srcX) * 4;
-          const dstIdx = offset + (y * dw + x) * 3;
           dst[dstIdx]     = bgra[srcIdx];     // B
           dst[dstIdx + 1] = bgra[srcIdx + 1]; // G
           dst[dstIdx + 2] = bgra[srcIdx + 2]; // R
+          srcIdx += 4;
+          dstIdx += 3;
         }
       }
       this.staging.writeBigUInt64LE(BigInt(Date.now()), 20);
@@ -140,11 +142,15 @@ class VirtualCamWriter {
   }
 
   flushToSharedMemory() {
-    // The DirectShow filter owns this word; preserve its live connection flag
-    // when publishing the rest of the frame header and pixels.
-    this.RtlMoveMemory(this.headerSnapshot, this.view, this.headerSnapshot.length);
-    this.staging.writeUInt32LE(this.headerSnapshot.readUInt32LE(16), 16);
-    this.RtlMoveMemory(this.view, this.staging, SHARED_FRAME_SIZE);
+    // Publish pixels before the timestamp. Zero means "write in progress";
+    // readers reject a frame changed during their copy. Never overwrite the
+    // connection flag at offset 16, which belongs to the DirectShow filter.
+    // Koffi 2.x returns an opaque External; normalize before pointer arithmetic.
+    const address = typeof this.view === 'bigint' ? this.view : koffi.address(this.view);
+    this.RtlMoveMemory(address + 20n, ZERO_TIMESTAMP, 8);
+    this.RtlMoveMemory(this.view, this.staging.subarray(0, 16), 16);
+    this.RtlMoveMemory(address + 28n, this.staging.subarray(28), SHARED_FRAME_SIZE - 28);
+    this.RtlMoveMemory(address + 20n, this.staging.subarray(20, 28), 8);
   }
 
   close() {

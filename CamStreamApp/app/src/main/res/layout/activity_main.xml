@@ -31,7 +31,7 @@
             android:layout_height="0dp"
             android:layout_marginTop="12dp"
             android:background="@color/surface"
-            app:layout_constraintDimensionRatio="H,4:3"
+            app:layout_constraintDimensionRatio="H,16:9"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/title">
@@ -203,6 +203,8 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/rotateButton"
+                android:enabled="false"
+                android:visibility="gone"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
