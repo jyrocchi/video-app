@@ -1,5 +1,7 @@
 # Selectable profiles — 2026-10-03
 
+Released as JyroCam1.0.3 on2026-10-04, tag/source9261e11; publicLatest/assets/hashes verified. See `mem:distribution/release-1.0.3`.
+
 Supersedes fixed-profile facts in `mem:streaming/720p30-profile` and `mem:streaming/wifi-mirror-android-compatibility`.
 
 Active apps: CamStreamApp + CamStreamDesktop. StreamProfile.kt / stream-profiles.js define 720p30 (6 Mbps / pacing 8 Mbps, Baseline 3.1), 720p60 (10/14 Mbps, 3.2), 1080p30 (12/16 Mbps, 4.0). UI persists selection, checks Camera2 native YUV size/min duration/AE and codec size/rate/bitrate/color, prefers hardware, CBR otherwise VBR. YuvFramePacker handles native size/mirror. Unsupported profiles omitted, incompatible camera switching disabled while streaming.

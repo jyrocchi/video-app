@@ -8,6 +8,8 @@
 
 **JyroCam 1.0.3 — Perfiles HD y Full HD**:
 
+Publicada como Latest, código/tag desde [`9261e11`](https://github.com/jyrocchi/video-app/commit/9261e112250e4be3de08c5bdf0c0fd19ed1d59d4), rama `compatibilidad-android-resolucion-fija`. SHA256 de ambos descargables confirmado con GitHub.
+
 - [Release y notas](https://github.com/jyrocchi/video-app/releases/tag/v1.0.3)
 - [Descargar Windows x64](https://github.com/jyrocchi/video-app/releases/download/v1.0.3/JyroCam-Portable-1.0.3.exe)
 - [Descargar APK Android](https://github.com/jyrocchi/video-app/releases/download/v1.0.3/JyroCam-1.0.3.apk)
