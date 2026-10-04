@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   openFolder: () => ipcRenderer.invoke('open-folder'),
   toggleNdi: () => ipcRenderer.invoke('toggle-ndi'),
   setVirtualCamera: (install) => ipcRenderer.invoke('set-virtual-camera', install),
+  setBlackout: (on) => ipcRenderer.invoke('set-blackout', !!on),
   frameRendered: () => ipcRenderer.send('frame-rendered'),
   onEvent: (cb) => {
     const listener = (_e, payload) => cb(payload);

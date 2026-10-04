@@ -26,8 +26,13 @@
   </header>
 
   <main>
-    <div id="frameBox">
+<div id="frameBox">
       <img id="frame" alt="">
+      <div id="blackoutOverlay" class="hidden">
+        <div class="lock-icon">🔒</div>
+        <div class="blackout-title">Vista oculta</div>
+        <div class="blackout-sub">La transmisión continúa</div>
+      </div>
       <div id="placeholder">
         <div class="big-icon">📱</div>
         <h2>Esperando conexion del celular</h2>
@@ -53,6 +58,7 @@
         <span>Salida NDI</span>
       </label>
       <span id="ndiStatus" class="ndi-status"></span>
+      <button id="blackoutBtn" class="btn-secondary" type="button" aria-pressed="false">Oscurecer vista</button>
     </div>
   </footer>
 
@@ -83,6 +89,28 @@ const recTime = $('recTime');
 const ndiToggle = $('ndiToggle');
 const ndiStatus = $('ndiStatus');
 const virtualCamBtn = $('virtualCamBtn');
+const blackoutBtn = $('blackoutBtn');
+const blackoutOverlay = $('blackoutOverlay');
+
+let blackoutOn = false;
+function applyBlackout(on) {
+  blackoutOn = !!on;
+  blackoutOverlay.classList.toggle('hidden', !blackoutOn);
+  blackoutBtn.classList.toggle('active', blackoutOn);
+  blackoutBtn.textContent = blackoutOn ? 'Mostrar vista' : 'Oscurecer vista';
+  blackoutBtn.setAttribute('aria-pressed', blackoutOn ? 'true' : 'false');
+}
+blackoutBtn.addEventListener('click', async () => {
+  blackoutBtn.disabled = true;
+  try {
+    const res = await window.api.setBlackout(!blackoutOn);
+    applyBlackout(res.blackout);
+  } catch (e) {
+    applyBlackout(false);
+  } finally {
+    blackoutBtn.disabled = false;
+  }
+});
 
 let recording = false;
 let recordingStart = 0;
@@ -130,7 +158,7 @@ window.api.onEvent((payload) => {
   if (payload.type === 'frame') {
     placeholder.style.display = 'none';
     img.src = 'data:image/jpeg;base64,' + payload.b64;
-    img.style.display = 'block';
+    img.style.display = blackoutOn ? 'none' : 'block';
     connDot.classList.add('on');
     connText.textContent = 'Conectado';
     sizeText.textContent = Math.round(payload.size / 1024) + ' KB/cuadro';
@@ -139,7 +167,7 @@ window.api.onEvent((payload) => {
   } else if (payload.type === 'stream-disconnected') {
     img.removeAttribute('src');
     img.style.display = 'none';
-    placeholder.style.display = 'flex';
+    placeholder.style.display = blackoutOn ? 'none' : 'flex';
     connDot.classList.remove('on');
     connText.textContent = 'Sin señal';
     $('bitrateText').textContent = '-- kbps H.264';

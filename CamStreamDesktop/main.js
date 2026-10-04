@@ -42,6 +42,7 @@ let latestFrameBuffer = null;
 let rendererFramePending = false;
 let rendererFrameDirty = false;
 let rendererFrameSentAt = null;
+let rendererBlackout = false;
 const sseClients = new Set();
 let recordingProc = null;
 let frameCount = 0;
@@ -199,6 +200,7 @@ function clearPublishedFrame() {
 
 function publishRendererFrame() {
   if (!mainWindow || mainWindow.isDestroyed() || !latestFrameB64) return;
+  if (rendererBlackout) return;
   if (rendererFramePending) {
     rendererFrameDirty = true;
     return;
@@ -780,6 +782,12 @@ ipcMain.handle('open-folder', async () => {
   fs.mkdirSync(folder, { recursive: true });
   const error = await shell.openPath(folder);
   return error ? { ok: false, error } : { ok: true, path: folder };
+});
+
+ipcMain.handle('set-blackout', (_event, on) => {
+  rendererBlackout = !!on;
+  if (!rendererBlackout && latestFrameB64) publishRendererFrame();
+  return { ok: true, blackout: rendererBlackout };
 });
 
 ipcMain.handle('toggle-ndi', async () => {
