@@ -24,6 +24,8 @@ class H264Encoder(
     private val bitrateMode: Int
     private val bufferInfo = MediaCodec.BufferInfo()
     private val framePacker = YuvFramePacker(width, height)
+    private val lumaTransformer = YuvFrameTransformer(width, height)
+    private val chromaTransformer = YuvFrameTransformer(width / 2, height / 2)
     @Volatile private var started = false
     @Volatile private var drainThread: Thread? = null
     private val transformedY = ByteArray(width * height)
@@ -133,23 +135,23 @@ class H264Encoder(
                     colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
                     mirror)
             } else {
-                copyTransformedPlane(transformedY, yPlane, sourceWidth, sourceHeight,
-                    yRowStride, 1, width, height, normalizedRotation, mirror)
+                lumaTransformer.copyPlane(transformedY, yPlane, sourceWidth, sourceHeight,
+                    yRowStride, 1, normalizedRotation, mirror)
                 inputBuf.put(transformedY, 0, ySize)
                 val chromaOutputStart = inputBuf.position()
                 val chromaWidth = sourceWidth / 2
                 val chromaHeight = sourceHeight / 2
                 if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
-                    copyTransformedPlane(transformedU, uPlane, chromaWidth, chromaHeight,
-                        uRowStride, uPixelStride, uvWidth, uvHeight, normalizedRotation, mirror)
+                    chromaTransformer.copyPlane(transformedU, uPlane, chromaWidth, chromaHeight,
+                        uRowStride, uPixelStride, normalizedRotation, mirror)
                     inputBuf.put(transformedU, 0, uvWidth * uvHeight)
-                    copyTransformedPlane(transformedV, vPlane, chromaWidth, chromaHeight,
-                        vRowStride, vPixelStride, uvWidth, uvHeight, normalizedRotation, mirror)
+                    chromaTransformer.copyPlane(transformedV, vPlane, chromaWidth, chromaHeight,
+                        vRowStride, vPixelStride, normalizedRotation, mirror)
                     inputBuf.put(transformedV, 0, uvWidth * uvHeight)
                 } else {
-                    copyTransformedInterleavedChroma(transformedUv, uPlane, vPlane,
+                    chromaTransformer.copyInterleavedChroma(transformedUv, uPlane, vPlane,
                         chromaWidth, chromaHeight, uRowStride, vRowStride,
-                        uPixelStride, vPixelStride, uvWidth, uvHeight, normalizedRotation, mirror)
+                        uPixelStride, vPixelStride, normalizedRotation, mirror)
                     inputBuf.put(transformedUv, 0, 2 * uvWidth * uvHeight)
                 }
                 check(inputBuf.position() - chromaOutputStart == 2 * uvWidth * uvHeight)
@@ -162,157 +164,6 @@ class H264Encoder(
         } catch (e: Exception) {
             Log.w(TAG, "encodeFrame error: ${e.message ?: e.javaClass.simpleName}", e)
             codecError = e.message ?: e.javaClass.simpleName
-        }
-    }
-
-    private fun copyTransformedPlane(
-        output: ByteArray,
-        plane: ByteBuffer,
-        sourceWidth: Int,
-        sourceHeight: Int,
-        rowStride: Int,
-        pixelStride: Int,
-        outputWidth: Int,
-        outputHeight: Int,
-        rotation: Int,
-        mirror: Boolean
-    ) {
-        val base = plane.position()
-        if ((rotation == 90 || rotation == 270) &&
-            sourceWidth == outputHeight && sourceHeight == outputWidth) {
-            val tileSize = TRANSFORM_TILE_SIZE
-            for (tileY in 0 until outputHeight step tileSize) {
-                val tileBottom = minOf(tileY + tileSize, outputHeight)
-                for (tileX in 0 until outputWidth step tileSize) {
-                    val tileRight = minOf(tileX + tileSize, outputWidth)
-                    for (col in tileX until tileRight) {
-                        val outputX = if (mirror) outputWidth - 1 - col else col
-                        val sourceX = if (rotation == 90) tileY else sourceWidth - 1 - tileY
-                        val sourceY = if (rotation == 90) sourceHeight - 1 - outputX else outputX
-                        val rowStep = if (rotation == 90) pixelStride else -pixelStride
-                        var sourceIndex = base + sourceY * rowStride + sourceX * pixelStride
-                        var outputIndex = tileY * outputWidth + col
-                        for (row in tileY until tileBottom) {
-                            output[outputIndex] = plane.get(sourceIndex)
-                            sourceIndex += rowStep
-                            outputIndex += outputWidth
-                        }
-                    }
-                }
-            }
-            return
-        }
-        val rotated = rotation == 90 || rotation == 270
-        val rotatedWidth = if (rotated) sourceHeight else sourceWidth
-        val rotatedHeight = if (rotated) sourceWidth else sourceHeight
-        val cropWidth: Int
-        val cropHeight: Int
-        if (rotatedWidth.toLong() * outputHeight > rotatedHeight.toLong() * outputWidth) {
-            cropWidth = rotatedHeight * outputWidth / outputHeight
-            cropHeight = rotatedHeight
-        } else {
-            cropWidth = rotatedWidth
-            cropHeight = rotatedWidth * outputHeight / outputWidth
-        }
-        val cropLeft = (rotatedWidth - cropWidth) / 2
-        val cropTop = (rotatedHeight - cropHeight) / 2
-        for (row in 0 until outputHeight) {
-            val rotatedY = cropTop + row * cropHeight / outputHeight
-            val outputStart = row * outputWidth
-            for (col in 0 until outputWidth) {
-                val outputX = if (mirror) outputWidth - 1 - col else col
-                val rotatedX = cropLeft + outputX * cropWidth / outputWidth
-                val sourceX: Int
-                val sourceY: Int
-                when (rotation) {
-                    90 -> { sourceX = rotatedY; sourceY = sourceHeight - 1 - rotatedX }
-                    180 -> { sourceX = sourceWidth - 1 - rotatedX; sourceY = sourceHeight - 1 - rotatedY }
-                    270 -> { sourceX = sourceWidth - 1 - rotatedY; sourceY = rotatedX }
-                    else -> { sourceX = rotatedX; sourceY = rotatedY }
-                }
-                output[outputStart + col] = plane.get(base + sourceY * rowStride + sourceX * pixelStride)
-            }
-        }
-    }
-
-    private fun copyTransformedInterleavedChroma(
-        output: ByteArray,
-        uPlane: ByteBuffer,
-        vPlane: ByteBuffer,
-        sourceWidth: Int,
-        sourceHeight: Int,
-        uRowStride: Int,
-        vRowStride: Int,
-        uPixelStride: Int,
-        vPixelStride: Int,
-        outputWidth: Int,
-        outputHeight: Int,
-        rotation: Int,
-        mirror: Boolean
-    ) {
-        val uBase = uPlane.position()
-        val vBase = vPlane.position()
-        if ((rotation == 90 || rotation == 270) &&
-            sourceWidth == outputHeight && sourceHeight == outputWidth) {
-            val tileSize = TRANSFORM_TILE_SIZE
-            for (tileY in 0 until outputHeight step tileSize) {
-                val tileBottom = minOf(tileY + tileSize, outputHeight)
-                for (tileX in 0 until outputWidth step tileSize) {
-                    val tileRight = minOf(tileX + tileSize, outputWidth)
-                    for (col in tileX until tileRight) {
-                        val outputX = if (mirror) outputWidth - 1 - col else col
-                        val sourceX = if (rotation == 90) tileY else sourceWidth - 1 - tileY
-                        val sourceY = if (rotation == 90) sourceHeight - 1 - outputX else outputX
-                        val uStep = if (rotation == 90) uPixelStride else -uPixelStride
-                        val vStep = if (rotation == 90) vPixelStride else -vPixelStride
-                        var uIndex = uBase + sourceY * uRowStride + sourceX * uPixelStride
-                        var vIndex = vBase + sourceY * vRowStride + sourceX * vPixelStride
-                        var outputIndex = (tileY * outputWidth + col) * 2
-                        for (row in tileY until tileBottom) {
-                            output[outputIndex] = uPlane.get(uIndex)
-                            output[outputIndex + 1] = vPlane.get(vIndex)
-                            uIndex += uStep
-                            vIndex += vStep
-                            outputIndex += outputWidth * 2
-                        }
-                    }
-                }
-            }
-            return
-        }
-        val rotated = rotation == 90 || rotation == 270
-        val rotatedWidth = if (rotated) sourceHeight else sourceWidth
-        val rotatedHeight = if (rotated) sourceWidth else sourceHeight
-        val cropWidth: Int
-        val cropHeight: Int
-        if (rotatedWidth.toLong() * outputHeight > rotatedHeight.toLong() * outputWidth) {
-            cropWidth = rotatedHeight * outputWidth / outputHeight
-            cropHeight = rotatedHeight
-        } else {
-            cropWidth = rotatedWidth
-            cropHeight = rotatedWidth * outputHeight / outputWidth
-        }
-        val cropLeft = (rotatedWidth - cropWidth) / 2
-        val cropTop = (rotatedHeight - cropHeight) / 2
-        for (row in 0 until outputHeight) {
-            val rotatedY = cropTop + row * cropHeight / outputHeight
-            val outputStart = row * outputWidth * 2
-            for (col in 0 until outputWidth) {
-                val outputX = if (mirror) outputWidth - 1 - col else col
-                val rotatedX = cropLeft + outputX * cropWidth / outputWidth
-                val sourceX: Int
-                val sourceY: Int
-                when (rotation) {
-                    90 -> { sourceX = rotatedY; sourceY = sourceHeight - 1 - rotatedX }
-                    180 -> { sourceX = sourceWidth - 1 - rotatedX; sourceY = sourceHeight - 1 - rotatedY }
-                    270 -> { sourceX = sourceWidth - 1 - rotatedY; sourceY = rotatedX }
-                    else -> { sourceX = rotatedX; sourceY = rotatedY }
-                }
-                val uIndex = uBase + sourceY * uRowStride + sourceX * uPixelStride
-                val vIndex = vBase + sourceY * vRowStride + sourceX * vPixelStride
-                output[outputStart + col * 2] = uPlane.get(uIndex)
-                output[outputStart + col * 2 + 1] = vPlane.get(vIndex)
-            }
         }
     }
 
@@ -508,7 +359,6 @@ class H264Encoder(
 
     companion object {
         private const val TAG = "H264Encoder"
-        private const val TRANSFORM_TILE_SIZE = 16
         private const val OUTPUT_TIMEOUT_US = 1_000L
         private const val EOS_TIMEOUT_US = 10_000L
         private const val DRAIN_STOP_TIMEOUT_MS = 100L

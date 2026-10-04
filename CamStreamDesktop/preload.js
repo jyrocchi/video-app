@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('api', {
   toggleNdi: () => ipcRenderer.invoke('toggle-ndi'),
   setVirtualCamera: (install) => ipcRenderer.invoke('set-virtual-camera', install),
   setBlackout: (on) => ipcRenderer.invoke('set-blackout', !!on),
+  setImageAdjustments: (values) => ipcRenderer.invoke('set-image-adjustments', values),
   frameRendered: () => ipcRenderer.send('frame-rendered'),
   onEvent: (cb) => {
     const listener = (_e, payload) => cb(payload);

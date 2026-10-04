@@ -8,6 +8,7 @@ Module._load = function (request, parent, isMain) {
 };
 const VirtualCamWriter = require('../virtual-cam-writer');
 Module._load = originalLoad;
+const { ImageAdjustments } = require('../image-adjustments');
 
 const width = 1280;
 const height = 720;
@@ -39,6 +40,19 @@ bgra.set([0, 0, 255, 255], 0);
 const bgraWriter = makeWriter();
 assert.equal(bgraWriter.writeBgra(bgra, width, height), true);
 assertTopLeftRedWrittenAsBottomUpBgr(bgraWriter);
+
+const imageAdjustments = new ImageAdjustments();
+imageAdjustments.set({ saturation: 0 });
+const grayscale = imageAdjustments.apply(bgra);
+assert.equal(bgraWriter.writeBgra(grayscale, width, height), true);
+const topLeftOffset = offset + ((height - 1) * width) * 3;
+assert.deepEqual([...bgraWriter.staging.subarray(topLeftOffset, topLeftOffset + 3)], [54, 54, 54],
+  'DirectShow output should receive the adjusted grayscale frame');
+imageAdjustments.blackout = true;
+assert.equal(bgraWriter.writeBgra(imageAdjustments.apply(bgra), width, height), true);
+assert.deepEqual([...bgraWriter.staging.subarray(topLeftOffset, topLeftOffset + 3)], [0, 0, 0],
+  'DirectShow output should receive opaque black during blackout');
+imageAdjustments.blackout = false;
 
 const rgba = Buffer.alloc(rgbaBytes);
 rgba.set([255, 0, 0, 255], 0);

@@ -169,6 +169,75 @@ footer {
 
 .btn-secondary.active:hover:not(:disabled) { background: #223a5e; }
 
+.image-adjust-controls { position: relative; }
+
+.image-adjust-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 12px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 290px;
+  max-width: calc(100vw - 32px);
+  padding: 14px;
+  color: #eee;
+  background: #17191d;
+  border: 1px solid #3a3d43;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+}
+
+.image-adjust-panel[hidden] { display: none; }
+
+.image-adjust-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.image-adjust-reset {
+  padding: 4px 7px;
+  color: #8bc5ff;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.image-adjust-reset:hover { background: #292d34; }
+
+.image-adjust-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: #c7c9ce;
+  font-size: 12px;
+}
+
+.image-adjust-slider > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.image-adjust-slider output {
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.image-adjust-slider input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: #1a73e8;
+  cursor: pointer;
+}
+
 #blackoutOverlay {
   position: absolute;
   inset: 0;

@@ -205,15 +205,13 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/rotateButton"
-                android:enabled="false"
-                android:visibility="gone"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:backgroundTint="@color/surface"
                 android:minHeight="44dp"
-                android:text="@string/rotate_0"
+                android:text="@string/auto_rotate_off"
                 android:textColor="@color/on_surface"
                 app:cornerRadius="10dp" />
 

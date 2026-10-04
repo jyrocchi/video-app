@@ -20,6 +20,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.util.Range as AndroidRange
 import android.util.Size
+import android.view.OrientationEventListener
 import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -57,6 +58,24 @@ class StreamService : LifecycleService() {
     private var encoderOutputWidth = 0
     private var encoderOutputHeight = 0
     private var profile = StreamProfile.HD30
+    @Volatile private var autoRotate = false
+    @Volatile private var activeAnalysis: ImageAnalysis? = null
+    private val cameraOrientation = CameraOrientation()
+    private var lastOrientationTarget = Surface.ROTATION_0
+    private val orientationListener by lazy {
+        object : OrientationEventListener(this) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (autoRotate && orientation in 0..359) {
+                    val targetRotation = cameraOrientation.update(orientation)
+                    if (targetRotation != lastOrientationTarget) {
+                        lastOrientationTarget = targetRotation
+                        activeAnalysis?.targetRotation = targetRotation
+                        Log.i(TAG, "Auto rotation target=$targetRotation")
+                    }
+                }
+            }
+        }
+    }
 
     private val mirrorRef = AtomicBoolean(false)
     private val rotationRef = AtomicInteger(0)
@@ -101,13 +120,15 @@ class StreamService : LifecycleService() {
         const val EXTRA_FACING_BACK = "facing_back"
         const val EXTRA_ROTATION = "rotation"
         const val EXTRA_MIRROR = "mirror"
+        const val EXTRA_AUTO_ROTATE = "auto_rotate"
 
         const val CHANNEL_ID = "camstream_channel"
         const val NOTIF_ID = 1
 
         fun start(ctx: Context, url: String, fps: Int, quality: Int,
                   facingBack: Boolean, rotation: Int, mirror: Boolean,
-                  profile: StreamProfile = if (fps == 60) StreamProfile.HD60 else StreamProfile.HD30) {
+                  profile: StreamProfile = if (fps == 60) StreamProfile.HD60 else StreamProfile.HD30,
+                  autoRotate: Boolean = false) {
             val i = Intent(ctx, StreamService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_SERVER_URL, url)
@@ -117,6 +138,7 @@ class StreamService : LifecycleService() {
                 putExtra(EXTRA_FACING_BACK, facingBack)
                 putExtra(EXTRA_ROTATION, rotation)
                 putExtra(EXTRA_MIRROR, mirror)
+                putExtra(EXTRA_AUTO_ROTATE, autoRotate)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
             else ctx.startService(i)
@@ -126,11 +148,13 @@ class StreamService : LifecycleService() {
             ctx.startService(Intent(ctx, StreamService::class.java).apply { action = ACTION_STOP })
         }
 
-        fun updateTransform(ctx: Context, rotation: Int, mirror: Boolean, facingBack: Boolean) {
+        fun updateTransform(ctx: Context, rotation: Int, mirror: Boolean, facingBack: Boolean,
+                            autoRotate: Boolean = false) {
             ctx.startService(Intent(ctx, StreamService::class.java).apply {
                 action = ACTION_UPDATE_TRANSFORM
                 putExtra(EXTRA_ROTATION, rotation)
                 putExtra(EXTRA_MIRROR, mirror)
+                putExtra(EXTRA_AUTO_ROTATE, autoRotate)
                 putExtra(EXTRA_FACING_BACK, facingBack)
             })
         }
@@ -142,6 +166,26 @@ class StreamService : LifecycleService() {
         createChannel()
     }
 
+    private fun setAutoRotate(enabled: Boolean) {
+        if (enabled && !orientationListener.canDetectOrientation()) {
+            autoRotate = false
+            activeAnalysis?.targetRotation = Surface.ROTATION_0
+            StreamStats.lastError.set("Este dispositivo no tiene sensor de orientación disponible")
+            StreamStats.addLog("Rotación automática no disponible: falta sensor de orientación")
+            return
+        }
+        autoRotate = enabled
+        if (enabled) {
+            orientationListener.enable()
+            lastOrientationTarget = cameraOrientation.currentRotation
+            activeAnalysis?.targetRotation = lastOrientationTarget
+        } else {
+            orientationListener.disable()
+            lastOrientationTarget = Surface.ROTATION_0
+            activeAnalysis?.targetRotation = Surface.ROTATION_0
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         val action = intent?.action
@@ -149,13 +193,15 @@ class StreamService : LifecycleService() {
         try {
             when (action) {
                 ACTION_STOP -> {
+                    setAutoRotate(false)
                     stopStreaming()
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                     return START_NOT_STICKY
                 }
                 ACTION_UPDATE_TRANSFORM -> {
-                    rotationRef.set(0)
+                    rotationRef.set(intent.getIntExtra(EXTRA_ROTATION, 0))
+                    setAutoRotate(intent.getBooleanExtra(EXTRA_AUTO_ROTATE, false))
                     mirrorRef.set(intent.getBooleanExtra(EXTRA_MIRROR, false))
                     var facingBack = intent.getBooleanExtra(EXTRA_FACING_BACK, facingBackRef.get())
                     val requestedCamera = if (facingBack) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
@@ -171,7 +217,7 @@ class StreamService : LifecycleService() {
                             bindUseCases(provider, targetFpsRef.get(), facingBack)
                         }
                     }
-                    Log.i(TAG, "Transform updated rot=${rotationRef.get()} mirror=${mirrorRef.get()}")
+                    Log.i(TAG, "Transform updated rot=${rotationRef.get()} autoRotate=$autoRotate mirror=${mirrorRef.get()}")
                 }
                 else -> {
                     val i = intent ?: return START_STICKY
@@ -180,13 +226,14 @@ class StreamService : LifecycleService() {
                     val fps = profile.fps
                     val facingBack = i.getBooleanExtra(EXTRA_FACING_BACK, true)
                     val mirror = i.getBooleanExtra(EXTRA_MIRROR, false)
+                    val requestedAutoRotate = i.getBooleanExtra(EXTRA_AUTO_ROTATE, false)
 
                     uploader = FrameUploader(url, profile)
                     uploader?.setH264Mode(true)
                     uploader?.start()
                     targetFpsRef.set(fps)
                     bitrateRef.set(profile.bitrate)
-                    rotationRef.set(0)
+                    rotationRef.set(i.getIntExtra(EXTRA_ROTATION, 0))
                     mirrorRef.set(mirror)
                     facingBackRef.set(facingBack)
 
@@ -199,6 +246,7 @@ class StreamService : LifecycleService() {
                     serviceActive.set(true)
                     acquireStreamingLocks(url)
                     StreamStats.reset()
+                    setAutoRotate(requestedAutoRotate)
                     StreamStats.addLog("Servicio iniciado: $profile, bitrate ${profile.bitrate / 1000}kbps máx. ${profile.transportBitrate / 1000}kbps")
                     captureCount.set(0)
                     cameraFrameCount.set(0)
@@ -228,6 +276,7 @@ class StreamService : LifecycleService() {
 
     override fun onDestroy() {
         Log.i(TAG, "Service onDestroy")
+        orientationListener.disable()
         serviceActive.set(false)
         stopStreaming()
         analysisExecutor.shutdown()
@@ -342,12 +391,14 @@ class StreamService : LifecycleService() {
         val analysisBuilder = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-            .setTargetRotation(Surface.ROTATION_0)
+            .setTargetRotation(if (autoRotate) cameraOrientation.currentRotation else Surface.ROTATION_0)
             .setResolutionSelector(resolutionSelector)
 
         applyFpsRange(analysisBuilder, fps, provider, facingBack)
 
         val analysis = analysisBuilder.build().also { ia ->
+            activeAnalysis = ia
+            if (autoRotate) ia.targetRotation = cameraOrientation.currentRotation
             ia.setAnalyzer(analysisExecutor) { imageProxy ->
                 processYuvFrame(imageProxy)
             }
@@ -442,7 +493,7 @@ class StreamService : LifecycleService() {
             val yRowStride = image.planes[0].rowStride
             val uRowStride = image.planes[1].rowStride
             val vRowStride = image.planes[2].rowStride
-            val rotation = 0
+            val rotation = if (autoRotate) image.imageInfo.rotationDegrees else rotationRef.get()
             val outputWidth = profile.width
             val outputHeight = profile.height
             if (h264Encoder != null && (encoderSourceWidth != image.width ||

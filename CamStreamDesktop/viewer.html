@@ -58,6 +58,32 @@
         <span>Salida NDI</span>
       </label>
       <span id="ndiStatus" class="ndi-status"></span>
+      <div id="imageAdjustControls" class="image-adjust-controls">
+        <button id="imageAdjustBtn" class="btn-secondary" type="button"
+                aria-haspopup="dialog" aria-expanded="false" aria-controls="imageAdjustPanel"
+                title="Ajustar brillo, contraste y saturación">
+          Ajustes de imagen
+        </button>
+        <section id="imageAdjustPanel" class="image-adjust-panel" role="dialog"
+                 aria-label="Ajustes de imagen" hidden>
+          <div class="image-adjust-header">
+            <strong>Ajustes de imagen</strong>
+            <button id="resetImageAdjustments" class="image-adjust-reset" type="button">Restablecer</button>
+          </div>
+          <label class="image-adjust-slider" for="brightnessSlider">
+            <span>Brillo <output id="brightnessValue" for="brightnessSlider">100%</output></span>
+            <input id="brightnessSlider" type="range" min="0" max="200" step="1" value="100">
+          </label>
+          <label class="image-adjust-slider" for="contrastSlider">
+            <span>Contraste <output id="contrastValue" for="contrastSlider">100%</output></span>
+            <input id="contrastSlider" type="range" min="0" max="200" step="1" value="100">
+          </label>
+          <label class="image-adjust-slider" for="saturationSlider">
+            <span>Saturación <output id="saturationValue" for="saturationSlider">100%</output></span>
+            <input id="saturationSlider" type="range" min="0" max="200" step="1" value="100">
+          </label>
+        </section>
+      </div>
       <button id="blackoutBtn" class="btn-secondary" type="button" aria-pressed="false">Oscurecer vista</button>
     </div>
   </footer>
@@ -91,6 +117,74 @@ const ndiStatus = $('ndiStatus');
 const virtualCamBtn = $('virtualCamBtn');
 const blackoutBtn = $('blackoutBtn');
 const blackoutOverlay = $('blackoutOverlay');
+const imageAdjustControls = $('imageAdjustControls');
+const imageAdjustBtn = $('imageAdjustBtn');
+const imageAdjustPanel = $('imageAdjustPanel');
+const resetImageAdjustments = $('resetImageAdjustments');
+
+const defaultImageAdjustments = { brightness: 100, contrast: 100, saturation: 100 };
+const imageAdjustmentControls = {
+  brightness: { input: $('brightnessSlider'), output: $('brightnessValue') },
+  contrast: { input: $('contrastSlider'), output: $('contrastValue') },
+  saturation: { input: $('saturationSlider'), output: $('saturationValue') }
+};
+const imageAdjustmentStorageKey = 'jyrocam-image-adjustments';
+
+function loadImageAdjustments() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(imageAdjustmentStorageKey));
+    if (!saved || typeof saved !== 'object') return { ...defaultImageAdjustments };
+    return Object.fromEntries(Object.keys(defaultImageAdjustments).map((key) => {
+      const value = saved[key];
+      return [key, typeof value === 'number' && Number.isFinite(value)
+        ? Math.max(0, Math.min(200, Math.round(value)))
+        : defaultImageAdjustments[key]];
+    }));
+  } catch (_) {
+    return { ...defaultImageAdjustments };
+  }
+}
+
+let imageAdjustments = loadImageAdjustments();
+function applyImageAdjustments() {
+  for (const [key, control] of Object.entries(imageAdjustmentControls)) {
+    control.input.value = imageAdjustments[key];
+    control.output.value = `${imageAdjustments[key]}%`;
+    control.output.textContent = `${imageAdjustments[key]}%`;
+  }
+  img.style.filter = `brightness(${imageAdjustments.brightness}%) contrast(${imageAdjustments.contrast}%) saturate(${imageAdjustments.saturation}%)`;
+  window.api.setImageAdjustments(imageAdjustments).catch(error => {
+    console.error('No se pudieron aplicar los ajustes a las salidas:', error);
+  });
+  try { localStorage.setItem(imageAdjustmentStorageKey, JSON.stringify(imageAdjustments)); } catch (_) {}
+}
+
+function setImageAdjustPanelOpen(open) {
+  imageAdjustPanel.hidden = !open;
+  imageAdjustBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+imageAdjustBtn.addEventListener('click', () => setImageAdjustPanelOpen(imageAdjustPanel.hidden));
+for (const [key, control] of Object.entries(imageAdjustmentControls)) {
+  control.input.addEventListener('input', () => {
+    imageAdjustments[key] = Number(control.input.value);
+    applyImageAdjustments();
+  });
+}
+resetImageAdjustments.addEventListener('click', () => {
+  imageAdjustments = { ...defaultImageAdjustments };
+  applyImageAdjustments();
+});
+document.addEventListener('pointerdown', (event) => {
+  if (!imageAdjustPanel.hidden && !imageAdjustControls.contains(event.target)) setImageAdjustPanelOpen(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !imageAdjustPanel.hidden) {
+    setImageAdjustPanelOpen(false);
+    imageAdjustBtn.focus();
+  }
+});
+applyImageAdjustments();
 
 let blackoutOn = false;
 function applyBlackout(on) {
@@ -141,17 +235,20 @@ async function init() {
   const ip = info.ips[0] || 'localhost';
   phoneUrlBox.innerHTML = `<code>${ip}</code>`;
 
-  ndiToggle.checked = info.ndi;
+  updateNdiStatus(info);
   updateVirtualCamButton(info);
-  if (info.ndi) {
-    ndiStatus.textContent = 'Activo';
-    ndiStatus.className = 'ndi-status on';
-  } else if (info.ndiError) {
-    ndiStatus.textContent = 'NDI no disponible';
-    ndiStatus.className = 'ndi-status off';
-  } else {
-    ndiStatus.textContent = '';
-  }
+}
+
+let ndiBusy = false;
+function updateNdiStatus(info) {
+  if (ndiBusy) return;
+  ndiToggle.checked = info.ndi;
+  ndiToggle.disabled = !info.ndiAvailable && !info.ndi;
+  // Keep retry available: a runtime may be installed while JyroCam is open.
+  ndiStatus.textContent = info.ndi ? 'Activo' : info.ndiAvailable
+    ? (info.ndiError ? 'Error: reintentar' : 'Desactivado') : 'NDI no disponible';
+  ndiStatus.className = `ndi-status ${info.ndi ? 'on' : 'off'}`;
+  ndiStatus.title = info.ndiError || info.ndiAvailabilityError || 'Runtime NDI disponible';
 }
 
 window.api.onEvent((payload) => {
@@ -257,20 +354,24 @@ virtualCamBtn.addEventListener('click', async () => {
 });
 
 ndiToggle.addEventListener('change', async () => {
-  const res = await window.api.toggleNdi();
-  if (res.ndi) {
-    ndiStatus.textContent = 'Activo';
-    ndiStatus.className = 'ndi-status on';
-  } else {
-    ndiStatus.textContent = res.ndiError ? 'NDI no disponible' : '';
-    ndiStatus.className = 'ndi-status off';
+  ndiBusy = true;
+  ndiToggle.disabled = true;
+  try {
+    const res = await window.api.toggleNdi();
+    ndiBusy = false;
+    updateNdiStatus(res);
+  } catch (error) {
+    ndiStatus.textContent = 'Error: reintentar';
+    ndiStatus.title = error.message;
+  } finally {
+    ndiBusy = false;
+    ndiToggle.disabled = false;
   }
-  ndiToggle.checked = res.ndi;
 });
 
 setInterval(async () => {
   const info = await window.api.getInfo();
-  if (!info.ndi) ndiToggle.checked = false;
+  updateNdiStatus(info);
   updateVirtualCamButton(info);
 }, 3000);
 

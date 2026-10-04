@@ -29,6 +29,8 @@ try {
 const jpeg = require('jpeg-js');
 const { H264Decoder, WIDTH, HEIGHT, FPS } = require('./h264-decoder.js');
 const { PROFILES, getProfile } = require('./stream-profiles');
+const { ImageAdjustments } = require('./image-adjustments');
+const imageAdjustments = new ImageAdjustments();
 
 const PORT = Number(process.env.CAMSTREAM_PORT) || 8080;
 const VIRTUAL_CAM_CLSID = '{B4E5B3A0-1B0C-4F8E-9D4D-8C5E7F3A2B1D}';
@@ -242,27 +244,19 @@ function updateFps() {
   }
 }
 
-function sendToNdi(jpegBuffer) {
-  if (!ndiEnabled || !ndiSender) return;
-  try {
-    ndiSender.send(jpegBuffer);
-  } catch (e) {
-    if (!ndiInitError) {
-      ndiInitError = e.message;
-      console.warn('NDI send error:', e.message);
-    }
-  }
-}
-
 function processFrameAsync(body) {
-  sendToNdi(body);
-
-  if (virtualCamWriter) {
+  if (virtualCamWriter || (ndiEnabled && ndiSender)) {
     try {
       const decoded = jpeg.decode(body, { useTArray: true });
-      virtualCamWriter.write(decoded.data, decoded.width, decoded.height);
+      const bgra = Buffer.from(decoded.data);
+      for (let i = 0; i < bgra.length; i += 4) {
+        const r = bgra[i]; bgra[i] = bgra[i + 2]; bgra[i + 2] = r;
+      }
+      const output = imageAdjustments.apply(bgra);
+      if (ndiEnabled && ndiSender) ndiSender.sendBgra(output, decoded.width, decoded.height);
+      if (virtualCamWriter) virtualCamWriter.writeBgra(output, decoded.width, decoded.height);
     } catch (e) {
-      // ignore decode errors
+      console.warn('JPEG output error:', e.message);
     }
   }
 
@@ -675,6 +669,7 @@ function startDecoder(profileId = '720p30') {
   h264Decoder = new H264Decoder(profileId);
   h264Decoder.onFrame = (bgraBuf, width, height, ts) => {
     const callbackStart = process.hrtime.bigint();
+    bgraBuf = imageAdjustments.apply(bgraBuf);
     let stageStart = process.hrtime.bigint();
     if (ndiEnabled && ndiSender) {
       try {
@@ -730,12 +725,22 @@ function tryEnableNdi() {
     const { NdiSender } = require('./ndi-sender.js');
     ndiSender = new NdiSender('JyroCam');
     ndiEnabled = true;
+    ndiInitError = null;
     console.log('NDI sender initialized');
 
   } catch (e) {
     ndiEnabled = false;
     ndiInitError = e.message;
     console.warn('NDI not available:', e.message);
+  }
+}
+
+function getNdiRuntimeStatus() {
+  try {
+    const status = require('./ndi-sender.js').getNdiAvailability?.();
+    return status || { available: ndiEnabled, error: ndiInitError };
+  } catch (error) {
+    return { available: false, error: error.message };
   }
 }
 
@@ -753,11 +758,14 @@ ipcMain.on('frame-rendered', onRendererFrameRendered);
 
 ipcMain.handle('get-info', () => {
   const virtualCam = getVirtualCamStatus();
+  const ndiRuntime = getNdiRuntimeStatus();
   return {
     port: PORT,
     ips: getLocalIPs(),
     ndi: ndiEnabled,
     ndiError: ndiInitError,
+    ndiAvailable: ndiRuntime.available,
+    ndiAvailabilityError: ndiRuntime.error,
     ffmpeg: !!ffmpegPath,
     virtualCamInstalled: virtualCam.installed,
     virtualCamUpdated: virtualCam.updated,
@@ -786,20 +794,25 @@ ipcMain.handle('open-folder', async () => {
 
 ipcMain.handle('set-blackout', (_event, on) => {
   rendererBlackout = !!on;
+  imageAdjustments.blackout = rendererBlackout;
   if (!rendererBlackout && latestFrameB64) publishRendererFrame();
   return { ok: true, blackout: rendererBlackout };
 });
+
+ipcMain.handle('set-image-adjustments', (_event, values) => imageAdjustments.set(values));
 
 ipcMain.handle('toggle-ndi', async () => {
   if (ndiEnabled) {
     if (ndiSender) { try { ndiSender.close(); } catch (_) {} }
     ndiSender = null;
     ndiEnabled = false;
+    ndiInitError = null;
   } else {
     tryEnableNdi();
     if (ndiEnabled) launchNdiWebcamIfPossible();
   }
-  return { ndi: ndiEnabled, ndiError: ndiInitError };
+  const runtime = getNdiRuntimeStatus();
+  return { ndi: ndiEnabled, ndiError: ndiInitError, ndiAvailable: runtime.available, ndiAvailabilityError: runtime.error };
 });
 
 function launchNdiWebcamIfPossible() {

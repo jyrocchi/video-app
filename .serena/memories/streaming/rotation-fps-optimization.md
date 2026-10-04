@@ -1,0 +1,11 @@
+# JyroCam Android — rotación y FPS
+
+## Causa y cambio
+La ruta H264Encoder para rotation!=0 usaba ByteBuffer.get(index) por cada píxel Y/U/V. En 720p eso hacía ~1.38 M llamadas a `get` por cuadro; los mapas precalculados/tiles solos apenas cambiaron el tiempo. Se añadió `YuvFrameTransformer`: empaqueta cada plano de ByteBuffer en arreglos reutilizables mediante get(byte[]) por fila (una copia bulk; plano Y compacto puede ser una llamada), mantiene mapas de coordenadas al cambiar dimensiones/orientación y hace el giro tiled en memoria. H264Encoder usa el transformer separado para luma y chroma. Preserva rotación, espejo, center-crop/resize, YUV planar/semi-planar, perfil/resolución/bitrate; no degrada calidad.
+
+## Medición y validación
+Medición final en Motorola Edge 30 Fusion, Android 14, test instrumentado de YUV sintético directo 1280x720 rotado 90°: referencia anterior p50 32.69ms/cuadro; optimizado p50 4.08ms y p95 4.54ms; 8.01× más rápido, bajo presupuesto 16.67ms del perfil 720p60. La primera optimización (mapas/tiles pero ByteBuffer.get por píxel) dio solo 1.01× y ~32.94ms; empaquetar en bulk por filas elimina el cuello. Mide transformación YUV, NO FPS extremo a extremo ni rotación física durante streaming. Benchmark JVM host después del cambio: 2.71ms referencia, 1.81ms optimizado (1.50×); preferir dato Motorola.
+
+Tests: `CamStreamApp/app/src/test/java/com/anomaly/camstream/YuvFrameTransformerTest.kt` compara rotación/espejo/croma contra referencia y opcionalmente benchmark con `CAMSTREAM_ROTATION_BENCH=1`. `CamStreamApp/app/src/androidTest/java/com/anomaly/camstream/YuvFrameTransformerPerformanceTest.kt` es benchmark opt-in por argumento `rotationBenchmark=true`; en el Motorola pasó el umbral p95 <16.67ms.
+
+Verificación: `.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug --no-daemon` PASS; `:app:connectedDebugAndroidTest` selectivo del benchmark Motorola PASS después de optimizar. El log runtime de StreamService ya expone `sensor`, `capt`, `enc`, `yuv` e `inputStarve` para comparar captura y codificación reales.

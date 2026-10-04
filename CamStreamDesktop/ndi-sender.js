@@ -5,6 +5,48 @@
 let koffi = null;
 let jpeg = null;
 let loadError = null;
+const fs = require('fs');
+const path = require('path');
+let runtime = null;
+let availability = null;
+let checkedAt = 0;
+
+function loadRuntime() {
+  if (runtime) return runtime;
+  if (!koffi) throw new Error(loadError || 'Koffi no disponible');
+  const candidates = [...NDI_DLL_CANDIDATES];
+  for (const key of ['NDI_RUNTIME_DIR_V6', 'NDI_RUNTIME_DIR_V5', 'NDI_RUNTIME_DIR_V4']) {
+    if (process.env[key]) candidates.unshift(path.join(process.env[key], 'Processing.NDI.Lib.x64.dll'));
+  }
+  // Tools installs also place the runtime alongside individual tools.
+  const visit = (dir, depth) => {
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const file = path.join(dir, entry.name);
+        if (entry.isFile() && entry.name.toLowerCase() === 'processing.ndi.lib.x64.dll') candidates.push(file);
+        else if (entry.isDirectory() && depth > 0) visit(file, depth - 1);
+      }
+    } catch (_) {}
+  };
+  visit(path.join(process.env.ProgramFiles || 'C:\\Program Files', 'NDI'), 3);
+  for (const file of candidates) {
+    try {
+      const lib = koffi.load(file);
+      if (!lib.func('NDIlib_initialize', 'bool', [])()) continue;
+      runtime = lib;
+      return runtime;
+    } catch (_) {}
+  }
+  throw new Error('No se pudo cargar el runtime NDI x64. Instala NDI Runtime o NDI Tools y vuelve a intentar.');
+}
+
+function getNdiAvailability() {
+  if (availability && (availability.available || Date.now() - checkedAt < 3000)) return availability;
+  checkedAt = Date.now();
+  try { loadRuntime(); availability = { available: true, error: null }; }
+  catch (e) { availability = { available: false, error: e.message }; }
+  return availability;
+}
 
 try { koffi = require('koffi'); } catch (e) { loadError = 'koffi: ' + e.message; }
 try { jpeg = require('jpeg-js'); } catch (e) { loadError = (loadError ? loadError + '; ' : '') + 'jpeg-js: ' + e.message; }
@@ -24,26 +66,9 @@ class NdiSender {
     if (!koffi) throw new Error(loadError || 'koffi no instalado (npm install koffi)');
     if (!jpeg) throw new Error(loadError || 'jpeg-js no instalado (npm install jpeg-js)');
 
-    let lib = null;
-    let lastErr = null;
-    for (const candidate of NDI_DLL_CANDIDATES) {
-      try {
-        lib = koffi.load(candidate);
-        break;
-      } catch (e) {
-        lastErr = e.message;
-      }
-    }
-    if (!lib) {
-      throw new Error('No se encontro Processing.NDI.Lib.x64.dll. Instala NDI Tools desde ndi.video');
-    }
+    const lib = loadRuntime();
 
-    const NDIlib_initialize = lib.func('NDIlib_initialize', 'bool', []);
-    if (!NDIlib_initialize()) {
-      throw new Error('NDIlib_initialize fallo');
-    }
-
-    const sendCreateT = koffi.struct('NDIlib_send_create_t', {
+    const sendCreateT = koffi.struct({
       p_ndi_name: 'string',
       p_groups: 'string',
       clock_video: 'bool',
@@ -65,7 +90,7 @@ class NdiSender {
       throw new Error('NDIlib_send_create fallo');
     }
 
-    this.videoFrameT = koffi.struct('NDIlib_video_frame_v2_t', {
+    this.videoFrameT = koffi.struct({
       xres: 'int32_t',
       yres: 'int32_t',
       FourCC: 'uint32_t',
@@ -148,4 +173,4 @@ class NdiSender {
   }
 }
 
-module.exports = { NdiSender };
+module.exports = { NdiSender, getNdiAvailability };

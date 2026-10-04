@@ -17,6 +17,10 @@
     <string name="facing_front">Frontal</string>
     <string name="rotate_0">Horizontal</string>
     <string name="rotate_90">Vertical</string>
+    <string name="auto_rotate_on">Rot. auto: Sí</string>
+    <string name="auto_rotate_off">Rot. auto: No</string>
+    <string name="auto_rotate_description_on">Rotación automática activada</string>
+    <string name="auto_rotate_description_off">Rotación automática desactivada</string>
     <string name="mirror_off">Espejo off</string>
     <string name="mirror_on">Espejo on</string>
     <string name="notification_title">JyroCam transmitiendo</string>

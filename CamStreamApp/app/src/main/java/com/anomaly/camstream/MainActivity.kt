@@ -31,10 +31,10 @@ class MainActivity : AppCompatActivity() {
     private var facingBack = true
     private var rotationStep = 0
     private var mirrorEnabled = false
+    private var autoRotate = false
     @Volatile private var lastConnectionState: Boolean? = null
     @Volatile private var lastPcLogAtMs = 0L
 
-private val qualityOptions = arrayOf("6000 kbps · máx. 8000")
     private val qualityValues = intArrayOf(85)
     private var profiles = listOf(StreamProfile.HD30)
     private var profilesInitialized = false
@@ -107,10 +107,17 @@ private val qualityOptions = arrayOf("6000 kbps · máx. 8000")
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-binding.urlInput.setText(loadIp())
+        binding.urlInput.setText(loadIp())
         binding.urlLayout.helperText = null
-        binding.rotateButton.isEnabled = false
-        binding.rotateButton.visibility = android.view.View.GONE
+        autoRotate = getSharedPreferences("camstream_prefs", MODE_PRIVATE).getBoolean("auto_rotate", false)
+        binding.rotateButton.isEnabled = true
+        binding.rotateButton.visibility = android.view.View.VISIBLE
+        binding.rotateButton.setOnClickListener {
+            autoRotate = !autoRotate
+            getSharedPreferences("camstream_prefs", MODE_PRIVATE).edit().putBoolean("auto_rotate", autoRotate).apply()
+            updateRotateLabel()
+            if (streaming) StreamService.updateTransform(this, rotationStep, mirrorEnabled, facingBack, autoRotate)
+        }
         binding.fpsSpinner.isEnabled = true
         binding.fpsSpinner.adapter = ArrayAdapter(this,
             android.R.layout.simple_spinner_dropdown_item, profiles.map { it.toString() })
@@ -137,7 +144,7 @@ binding.urlInput.setText(loadIp())
             facingBack = !facingBack
             binding.facingButton.setText(if (facingBack) R.string.facing_back else R.string.facing_front)
             if (streaming) {
-                StreamService.updateTransform(this, rotationStep, mirrorEnabled, facingBack)
+                StreamService.updateTransform(this, rotationStep, mirrorEnabled, facingBack, autoRotate)
             } else {
                 bindPreview()
             }
@@ -147,7 +154,7 @@ binding.urlInput.setText(loadIp())
             saveMirror(mirrorEnabled)
             updateMirrorLabel()
             applyPreviewTransform()
-            if (streaming) StreamService.updateTransform(this, rotationStep, mirrorEnabled, facingBack)
+            if (streaming) StreamService.updateTransform(this, rotationStep, mirrorEnabled, facingBack, autoRotate)
         }
 
         if (allPermissionsGranted()) {
@@ -164,7 +171,9 @@ binding.urlInput.setText(loadIp())
 
     private fun updateRotateLabel() {
         binding.rotateButton.setText(
-            if (rotationStep == 0) R.string.rotate_0 else R.string.rotate_90)
+            if (autoRotate) R.string.auto_rotate_on else R.string.auto_rotate_off)
+        binding.rotateButton.contentDescription = getString(
+            if (autoRotate) R.string.auto_rotate_description_on else R.string.auto_rotate_description_off)
     }
 
     private fun updateMirrorLabel() {
@@ -249,7 +258,7 @@ val ip = binding.urlInput.text?.toString()?.trim().orEmpty()
             updateFacingAvailability()
             binding.fpsSpinner.isEnabled = false
             showOnAirIndicator()
-            StreamService.start(this, url, fps, qualityValues[0], facingBack, rotationStep, mirrorEnabled, profile)
+            StreamService.start(this, url, fps, qualityValues[0], facingBack, rotationStep, mirrorEnabled, profile, autoRotate)
             setStatus(R.string.status_starting, true)
             binding.startButton.setText(R.string.stop_stream)
             startStatusPolling()
