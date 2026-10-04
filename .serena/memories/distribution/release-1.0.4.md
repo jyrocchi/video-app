@@ -1,6 +1,8 @@
 # JyroCam 1.0.4 "ajuste UI" — publicación 2026-10-04
 
-Release candidata sobre commit `7154e81`, rama `compatibilidad-android-resolucion-fija`. Tag `v1.0.4` ya pusheado al remoto; queda pendiente la subida de binarios y notas a GitHub Releases.
+Release pública verificada `Latest`: https://github.com/jyrocchi/video-app/releases/tag/v1.0.4
+
+Tag `v1.0.4` publicado y assets subidos desde el commit `7154e81` en rama `compatibilidad-android-resolucion-fija`.
 
 ## Cambios de UI
 
@@ -14,11 +16,11 @@ Release candidata sobre commit `7154e81`, rama `compatibilidad-android-resolucio
 - `npm test` y `./gradlew.bat :app:assembleDebug` PASS; visor carga sin advertencias.
 - Smoke Motorola USB (ID `ZY22G6BQKF`): `999.1.1.1` rechazado por regex IPv4 (mensaje "Ingresa una IPv4 válida (ej. 192.168.1.50)"); `192.168.1.50` arranca la transmisión con URL `http://192.168.1.50:8080`, overlay "EN VIVO" y botón "Detener".
 
-## Descargables pendientes de publicar (binarios ya construidos)
+## Descargables publicados (confirmados por API de GitHub)
 
-- Windows x64: `JyroCam-Portable-1.0.4.exe` — 94,106,980 bytes, SHA256 `9F0656CCAE93D79789E7D29B554FD5DC0053BA95D784E413732145AB2E9AEE52`.
-- Android: `JyroCam-1.0.4.apk` — 10,449,873 bytes, SHA256 `73AD0CBB28ABCA41E5D64486F4A8B9E0C9B33C0E4A385CD7AD57086ED7D99CB9`.
-- Integridad: `checksums-1.0.4.sha256` con ambos hashes.
+- Windows x64: https://github.com/jyrocchi/video-app/releases/download/v1.0.4/JyroCam-Portable-1.0.4.exe — 94,106,980 bytes, SHA256 `9F0656CCAE93D79789E7D29B554FD5DC0053BA95D784E413732145AB2E9AEE52`.
+- Android: https://github.com/jyrocchi/video-app/releases/download/v1.0.4/JyroCam-1.0.4.apk — 10,449,873 bytes, SHA256 `73AD0CBB28ABCA41E5D64486F4A8B9E0C9B33C0E4A385CD7AD57086ED7D99CB9`.
+- Integridad: https://github.com/jyrocchi/video-app/releases/download/v1.0.4/checksums-1.0.4.sha256 — hashes remotos coinciden con los locales.
 
 Notas versionadas en `RELEASE_NOTES_1.0.4.md`. Versiones anteriores 1.0.3, 1.0.2, 1.0.1 y v1.0.0-delay-v1 se mantienen en GitHub Releases.
 
@@ -28,9 +30,10 @@ Notas versionadas en `RELEASE_NOTES_1.0.4.md`. Versiones anteriores 1.0.3, 1.0.2
 - Antes de subir el siguiente binario, verificar que existe el reemplazo (no borrar la única compilación disponible).
 - IDs, CLSID, nombre de memoria compartida, applicationId y appId Electron se conservan para evitar migración manual.
 - Cambios puramente de UI: no se modificó el contrato del transporte (`POST /stream-h264` con `X-JyroCam-Profile` 720p30/720p60/1080p30), bitrates, pacing, ni las DLL DirectShow. Mediciones de 1.0.3 siguen aplicando; no se repitió captura absoluta de latencia.
-- `gh` CLI no estaba autenticado en este shell mientras `git` sí; el tag se subió vía `git push` y los assets se publican con `gh release create` tras autenticar. No imprimir ni persistir tokens; usar la credencial de Git solo en memoria.
+- `gh` CLI rechazó el token por faltar `read:org`; usando `GH_TOKEN=<PAT>` como variable de entorno con scope `repo`, `gh release create` publicó la versión 1.0.4 como `Latest`. El token no se imprimió ni se guardó en disco; sólo se usó en esta sesión para crear el release.
 
 ## MCP
 
 - Codebase `video-app`: ADR reemplazado para incluir la sección "Publicación 1.0.4 'ajuste UI' (2026-10-04)" con hashes, commit y smoke; índice reindexado en modo `moderate`.
 - Serena: esta memoria escrita directamente en `.serena/memories/distribution/release-1.0.4.md` porque `list_memories` presentó timeout en la sesión actual; mantiene el patrón usado para 1.0.3.
+- Tras publicar, la memoria se actualizó con la URL del release y los enlaces remotos de los assets.
