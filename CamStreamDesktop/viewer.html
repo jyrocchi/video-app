@@ -31,10 +31,9 @@
       <div id="placeholder">
         <div class="big-icon">📱</div>
         <h2>Esperando conexion del celular</h2>
-        <p>Abre la app <b>JyroCam</b> en tu Android y configura esta URL:</p>
+        <p>Abre la app <b>JyroCam</b> en tu Android y configura tu dirección IPv4:</p>
         <div id="phoneUrlBox"></div>
-        <p class="hint">Puerto: <span id="portText">8080</span></p>
-        <p class="hint">Por USB: ejecuta <code>adb reverse tcp:8080 tcp:8080</code> y usa <code>http://127.0.0.1:8080</code> en Android.</p>
+        <span id="portText" style="display:none">8080</span>
       </div>
     </div>
   </main>
@@ -111,8 +110,8 @@ function updateVirtualCamButton(info) {
 async function init() {
   const info = await window.api.getInfo();
   portText.textContent = info.port;
-  const url = `http://${info.ips[0] || 'localhost'}:${info.port}`;
-  phoneUrlBox.innerHTML = `<code>${url}</code>`;
+  const ip = info.ips[0] || 'localhost';
+  phoneUrlBox.innerHTML = `<code>${ip}</code>`;
 
   ndiToggle.checked = info.ndi;
   updateVirtualCamButton(info);

@@ -118,9 +118,11 @@
                 android:id="@+id/urlInput"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="textUri"
+                android:digits="0123456789."
+                android:inputType="phone"
+                android:maxLength="15"
                 android:textColor="@color/on_surface"
-                tools:text="http://192.168.1.50:8080" />
+                tools:text="192.168.1.50" />
         </com.google.android.material.textfield.TextInputLayout>
 
         <LinearLayout
@@ -133,10 +135,12 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/urlLayout">
 
-            <LinearLayout
+<LinearLayout
+                android:id="@+id/qualityContainer"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
+                android:layout_height="0dp"
+                android:orientation="vertical"
+                android:visibility="gone">
 
                 <TextView
                     android:layout_width="wrap_content"

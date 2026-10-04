@@ -1,6 +1,6 @@
 {
   "name": "jyrocam-desktop",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "JyroCam: visor, grabador y camara virtual",
   "main": "main.js",
   "scripts": {

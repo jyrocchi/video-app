@@ -34,11 +34,21 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastConnectionState: Boolean? = null
     @Volatile private var lastPcLogAtMs = 0L
 
-    private val qualityOptions = arrayOf("6000 kbps · máx. 8000")
+private val qualityOptions = arrayOf("6000 kbps · máx. 8000")
     private val qualityValues = intArrayOf(85)
     private var profiles = listOf(StreamProfile.HD30)
     private var profilesInitialized = false
     private var previewProvider: ProcessCameraProvider? = null
+
+    companion object {
+        private const val TAG = "MainActivity"
+        private const val PC_LOG_INTERVAL_MS = 3000L
+        private const val SERVER_PORT = 8080
+    }
+
+    private val ipv4Regex = Regex(
+        "^(25[0-5]|2[0-4]\\d|[01]?\\d?\\d)(\\.(25[0-5]|2[0-4]\\d|[01]?\\d?\\d)){3}$"
+    )
 
     @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
     private fun updateFacingAvailability() {
@@ -97,19 +107,10 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        binding.urlInput.setText(loadUrl())
-        rotationStep = 0
-        mirrorEnabled = loadMirror()
-        updateRotateLabel()
-        updateMirrorLabel()
-        applyPreviewTransform()
-        showPreviewIndicator()
-
-        binding.qualitySpinner.adapter = ArrayAdapter(this,
-            android.R.layout.simple_spinner_dropdown_item, qualityOptions)
+binding.urlInput.setText(loadIp())
+        binding.urlLayout.helperText = null
         binding.rotateButton.isEnabled = false
         binding.rotateButton.visibility = android.view.View.GONE
-        binding.qualitySpinner.isEnabled = false
         binding.fpsSpinner.isEnabled = true
         binding.fpsSpinner.adapter = ArrayAdapter(this,
             android.R.layout.simple_spinner_dropdown_item, profiles.map { it.toString() })
@@ -117,15 +118,17 @@ class MainActivity : AppCompatActivity() {
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
                 val profile = profiles.getOrNull(position) ?: return
-                binding.qualitySpinner.adapter = ArrayAdapter(this@MainActivity,
-                    android.R.layout.simple_spinner_dropdown_item,
-                    listOf("${profile.bitrate / 1000} kbps · máx. ${profile.transportBitrate / 1000}"))
                 if (profilesInitialized) getSharedPreferences("camstream_prefs", MODE_PRIVATE)
                     .edit().putString("profile", profile.id).apply()
             }
         }
-        binding.qualitySpinner.setSelection(qualityValues.indexOf(85))
         binding.fpsSpinner.setSelection(0)
+        rotationStep = 0
+        mirrorEnabled = loadMirror()
+        updateRotateLabel()
+        updateMirrorLabel()
+        applyPreviewTransform()
+        showPreviewIndicator()
         renderStatsSummary()
 
         binding.startButton.setOnClickListener { onToggle() }
@@ -228,25 +231,25 @@ class MainActivity : AppCompatActivity() {
                 permissionLauncher.launch(permissions.toTypedArray())
                 return
             }
-            val url = binding.urlInput.text?.toString()?.trim().orEmpty()
-            if (url.isEmpty()) {
-                binding.urlLayout.error = "Ingresa la URL del servidor"
+val ip = binding.urlInput.text?.toString()?.trim().orEmpty()
+            if (ip.isEmpty() || !ipv4Regex.matches(ip)) {
+                binding.urlLayout.error = getString(R.string.server_url_invalid)
                 return
             }
             binding.urlLayout.error = null
-            saveUrl(url)
-            val quality = qualityValues[binding.qualitySpinner.selectedItemPosition]
+            saveIp(ip)
+            val url = "http://$ip:$SERVER_PORT"
             val profile = profiles.getOrNull(binding.fpsSpinner.selectedItemPosition) ?: return
             val fps = profile.fps
             StreamStats.clearLog()
-            StreamStats.addLog("Iniciando transmisión: $profile, ${profile.bitrate / 1000}kbps")
+            StreamStats.addLog("Iniciando transmisión: $profile, ${profile.bitrate / 1000}kbps → $url")
             lastConnectionState = null
             lastPcLogAtMs = 0L
             streaming = true
             updateFacingAvailability()
             binding.fpsSpinner.isEnabled = false
             showOnAirIndicator()
-            StreamService.start(this, url, fps, quality, facingBack, rotationStep, mirrorEnabled, profile)
+            StreamService.start(this, url, fps, qualityValues[0], facingBack, rotationStep, mirrorEnabled, profile)
             setStatus(R.string.status_starting, true)
             binding.startButton.setText(R.string.stop_stream)
             startStatusPolling()
@@ -256,7 +259,8 @@ class MainActivity : AppCompatActivity() {
     private fun startStatusPolling() {
         lifecycleScope.launch {
             while (streaming) {
-                val url = binding.urlInput.text?.toString()?.trim().orEmpty()
+                val ip = binding.urlInput.text?.toString()?.trim().orEmpty()
+                val url = if (ipv4Regex.matches(ip)) "http://$ip:$SERVER_PORT" else ""
                 val ok = ping(url)
                 if (streaming) {
                     if (ok) setStatus(R.string.status_streaming, true)
@@ -367,14 +371,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun allPermissionsGranted() = permissions.all { hasPermission(it) }
 
-    private fun saveUrl(url: String) {
+    private fun saveIp(ip: String) {
         getSharedPreferences("camstream_prefs", MODE_PRIVATE).edit()
-            .putString("server_url", url).apply()
+            .putString("server_ip", ip).apply()
     }
 
-    private fun loadUrl(): String {
+    private fun loadIp(): String {
         val prefs = getSharedPreferences("camstream_prefs", MODE_PRIVATE)
-        return prefs.getString("server_url", "http://127.0.0.1:8080") ?: "http://127.0.0.1:8080"
+        val stored = prefs.getString("server_ip", null)
+        if (!stored.isNullOrBlank() && ipv4Regex.matches(stored)) return stored
+        val legacy = prefs.getString("server_url", null)
+        if (!legacy.isNullOrBlank()) {
+            val extracted = ipv4Regex.find(legacy)?.toString()
+            if (!extracted.isNullOrBlank()) return extracted
+        }
+        return ""
     }
 
     private fun saveRotation(v: Int) {
@@ -403,10 +414,5 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (streaming) StreamService.stop(this)
-    }
-
-    companion object {
-        private const val TAG = "MainActivity"
-        private const val PC_LOG_INTERVAL_MS = 3000L
     }
 }
