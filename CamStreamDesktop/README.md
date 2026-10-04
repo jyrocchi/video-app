@@ -12,7 +12,7 @@ npm run pack  # dist/win-unpacked/JyroCam.exe
 npm run build # portable .exe en dist/
 ```
 
-El portable actual se genera como `dist/JyroCam-Portable-1.0.2.exe` y el APK Android 1.0.2 desde `CamStreamApp/`. La cámara virtual se incluye como DLL empaquetada; el botón **Instalar cámara virtual** la registra para este usuario. El estado del botón distingue instalada, desactualizada, conectada y retirada. Se mantienen el ID del APK, el CLSID y la memoria compartida para actualizar instalaciones existentes.
+El portable actual se genera como `dist/JyroCam-Portable-1.0.3.exe` y el APK Android 1.0.3 desde `CamStreamApp/`. La cámara virtual se incluye como DLL empaquetada; el botón **Instalar cámara virtual** la registra para este usuario. El estado del botón distingue instalada, desactualizada, conectada y retirada. Se mantienen el ID del APK, el CLSID y la memoria compartida para actualizar instalaciones existentes.
 
 Antes de iniciar otra copia, cierra la instancia anterior que escuche en el puerto 8080. Para conectarte por USB: `C:\Android\platform-tools\adb.exe reverse tcp:8080 tcp:8080`; usa `http://127.0.0.1:8080` en Android. Por Wi-Fi usa la IP del PC que muestra la ventana. Para instalar el dispositivo, pulsa **Instalar cámara virtual** y vuelve a abrir la aplicación que vaya a consumirla.
 
@@ -21,14 +21,16 @@ Antes de iniciar otra copia, cierra la instancia anterior que escuche en el puer
 `POST /stream-h264` recibe NAL H.264 con prefijo de longitud de 4 bytes en big-endian. `main.js` mantiene una conexión activa, respeta backpressure y entrega NAL a `h264-decoder.js` (FFmpeg); `POST /upload-h264` sigue disponible para clientes anteriores. El visor Electron muestra solo el JPEG más reciente mientras termina de renderizar. `/status` expone métricas y `/frame.jpg` el último cuadro.
 
 - `main.js`: recepción, vídeo, métricas, IPC, grabación, NDI y cámara virtual.
-- `h264-decoder.js`: FFmpeg H.264 → BGRA 1280×720 y MJPEG nativo en pipes separados; no comprime JPEG ni convierte BMP en JavaScript. Usa decodificación por slices, timestamps continuos y contrapresión.
+- `h264-decoder.js` y `stream-profiles.js`: FFmpeg H.264 → BGRA y MJPEG nativo según perfil, en pipes separados; no comprime JPEG ni convierte BMP en JavaScript. Usa decodificación por slices, timestamps continuos y contrapresión.
 - `viewer.html`, `preload.js`, `styles.css`: interfaz y puente IPC.
 - `virtual-cam-writer.js` y `virtual-cam/`: memoria compartida y filtro DirectShow; la DLL está en `virtual-cam/bin/JyroCamVirtualCam.dll` y registra el dispositivo como **JyroCam**.
 - `test/stream-integration.js`: prueba de recepción persistente y decodificación JPEG.
 
-Perfil vigente: captura y salidas **1280×720 a 30 FPS**, H.264 objetivo 6000 kbps y techo sostenido 8000 kbps en el enlace Android-PC. El filtro DirectShow entrega RGB24 1280×720; reconstruye `virtual-cam/build.bat` antes de empaquetar y pulsa **Actualizar cámara virtual** si hay un controlador anterior. Cierra/reabre la aplicación consumidora para cargar la nueva DLL. Se conservan CLSID y nombre de memoria compartida.
+Perfiles vigentes: **1280×720 a 30/60 FPS** y **1920×1080 a 30 FPS**. Objetivo H.264 6000/10000/12000 kbps; techo sostenido 8000/14000/16000 kbps. El teléfono negocia `X-JyroCam-Profile` y `/status.video.profiles` anuncia soporte. Las sesiones anteriores sin cabecera usan 720p30. El grabador usa la cadencia del perfil; cambiar perfil detiene una grabación abierta para conservar un MP4 válido.
 
-El visor distingue **kbps H.264** (caudal recibido) de **KB/cuadro** (tamaño del JPEG). NDI tiene su propio transporte: el límite de 8000 kbps corresponde al H.264 del teléfono, no al caudal del SDK NDI. Resultados medidos y pruebas reproducibles en [`PERFORMANCE.md`](PERFORMANCE.md).
+DirectShow ofrece los tres formatos RGB24. Reconstruye `virtual-cam/build.bat` antes de empaquetar y pulsa **Actualizar cámara virtual**. Cierra consumidores antiguos antes de iniciar la nueva aplicación, y reabre la captura tras cambiar resolución. Se conservan CLSID y nombre de memoria; se amplió su capacidad hasta 1080p y se añadió la cadencia después del área máxima de píxeles. Estos cambios corresponden a JyroCam 1.0.3; el release anterior 1.0.2 conserva la resolución fija.
+
+El visor distingue **kbps H.264** (caudal recibido) de **KB/cuadro** (tamaño del JPEG). Los límites por perfil corresponden al H.264 del teléfono, no al caudal del SDK NDI. Resultados medidos y pruebas reproducibles en [`PERFORMANCE.md`](PERFORMANCE.md).
 
 Los binarios en `dist/` son locales e ignorados por Git: genera uno nuevo desde la fuente actual o usa un [release](https://github.com/jyrocchi/video-app/releases) asociado al tag correspondiente.
 

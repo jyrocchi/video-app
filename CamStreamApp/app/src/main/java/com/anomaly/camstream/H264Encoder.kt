@@ -44,8 +44,10 @@ class H264Encoder(
 
     init {
         val mime = MediaFormat.MIMETYPE_VIDEO_AVC
-        encoder = MediaCodec.createEncoderByType(mime)
-        require(bitrate in 1..8_000_000) { "Bitrate AVC fuera del límite de 8000kbps" }
+        val profile = StreamProfile.forFormat(width, height, fps)
+        require(bitrate in 1..profile.bitrate) { "Bitrate AVC fuera del perfil" }
+        encoder = MediaCodec.createByCodecName(profile.encoderName()
+            ?: throw IllegalStateException("Codificador AVC incompatible con $profile"))
         val capabilities = encoder.codecInfo.getCapabilitiesForType(mime)
         val supported = capabilities.colorFormats
         bitrateMode = if (capabilities.encoderCapabilities?.isBitrateModeSupported(
@@ -67,9 +69,14 @@ class H264Encoder(
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameIntervalSec)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
             setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
-            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            setInteger(MediaFormat.KEY_LEVEL, profile.level)
         }
-        encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        try {
+            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        } catch (error: Exception) {
+            encoder.release()
+            throw error
+        }
     }
 
     fun start(): Unit = synchronized(codecLock) {

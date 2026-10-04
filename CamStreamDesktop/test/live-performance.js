@@ -19,9 +19,10 @@ function get(url) {
 }
 const status = async () => JSON.parse(await get('/status'));
 (async () => {
+  const expected = (await status()).video;
   const image = jpeg.decode(await get('/frame.jpg'));
-  assert.equal(image.width, 1280);
-  assert.equal(image.height, 720);
+  assert.equal(image.width, expected.width);
+  assert.equal(image.height, expected.height);
   let previous = await status();
   assert.equal(previous.h264.active, true, 'Persistent Android stream must be active');
   const first = previous;
@@ -56,6 +57,8 @@ const status = async () => JSON.parse(await get('/status'));
   const summary = {
     seconds: elapsed / 1000,
     resolution: `${image.width}x${image.height}`,
+    profile: expected.id,
+    peerAddress: previous.h264.peerAddress,
     decodedFps: (previous.h264.decoder.framesDecoded - first.h264.decoder.framesDecoded) * 1000 / elapsed,
     jpegFps: (previous.h264.decoder.jpegFrames - first.h264.decoder.jpegFrames) * 1000 / elapsed,
     renderedFps: (previous.h264.output.renderedFrames - first.h264.output.renderedFrames) * 1000 / elapsed,
@@ -66,8 +69,10 @@ const status = async () => JSON.parse(await get('/status'));
     requests: previous.h264.requests - first.h264.requests
   };
   console.log('MEASURED ' + JSON.stringify(summary));
-  assert.ok(summary.decodedFps >= 29 && summary.decodedFps <= 31, 'Measured camera output is not near 30fps');
-  assert.ok(summary.jpegFps >= 29 && summary.jpegFps <= 31, 'Viewer delivery is not near 30fps');
-  assert.ok(summary.renderedFps >= 29 && summary.renderedFps <= 31, 'Desktop renderer is not near 30fps');
-  assert.ok(summary.maxKbps <= 8000, 'Measured transport exceeded the 8000kbps ceiling');
+  for (const metric of ['decodedFps', 'jpegFps', 'renderedFps']) {
+    assert.ok(summary[metric] >= expected.fps * 0.96 && summary[metric] <= expected.fps * 1.04,
+      `${metric} is not near ${expected.fps}fps: ${summary[metric]}`);
+  }
+  assert.ok(summary.maxKbps <= expected.maxBitrateKbps, 'Measured transport exceeded profile ceiling');
+  assert.equal(summary.requests, 0, 'Stream reconnected during measurement');
 })().catch(error => { console.error(error); process.exitCode = 1; });

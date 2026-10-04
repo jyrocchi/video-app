@@ -36,8 +36,44 @@ class MainActivity : AppCompatActivity() {
 
     private val qualityOptions = arrayOf("6000 kbps · máx. 8000")
     private val qualityValues = intArrayOf(85)
-    private val fpsOptions = arrayOf("30")
-    private val fpsValues = intArrayOf(30)
+    private var profiles = listOf(StreamProfile.HD30)
+    private var profilesInitialized = false
+    private var previewProvider: ProcessCameraProvider? = null
+
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun updateFacingAvailability() {
+        val provider = previewProvider ?: return
+        var available = provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) &&
+            provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
+        if (available && streaming) {
+            val otherFacing = if (facingBack) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+            val info = provider.availableCameraInfos.firstOrNull { it.lensFacing == otherFacing }
+            val profile = profiles.getOrNull(binding.fpsSpinner.selectedItemPosition)
+            available = info != null && profile != null && profile.supportsCamera(
+                getSystemService(android.hardware.camera2.CameraManager::class.java).getCameraCharacteristics(
+                    androidx.camera.camera2.interop.Camera2CameraInfo.from(info).cameraId))
+        }
+        binding.facingButton.isEnabled = available
+    }
+
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun refreshProfiles(provider: ProcessCameraProvider) {
+        val facing = if (facingBack) CameraSelector.LENS_FACING_BACK else CameraSelector.LENS_FACING_FRONT
+        val info = provider.availableCameraInfos.firstOrNull { it.lensFacing == facing } ?: return
+        val id = androidx.camera.camera2.interop.Camera2CameraInfo.from(info).cameraId
+        val characteristics = getSystemService(android.hardware.camera2.CameraManager::class.java)
+            .getCameraCharacteristics(id)
+        val previous = profiles.getOrNull(binding.fpsSpinner.selectedItemPosition)?.id.takeIf { profilesInitialized }
+            ?: getSharedPreferences("camstream_prefs", MODE_PRIVATE).getString("profile", "720p30")
+        profiles = StreamProfile.entries.filter { it.supportsCamera(characteristics) && it.encoderName() != null }
+        profilesInitialized = true
+        binding.fpsSpinner.adapter = ArrayAdapter(this,
+            android.R.layout.simple_spinner_dropdown_item, profiles.map { it.toString() })
+        binding.fpsSpinner.setSelection(profiles.indexOfFirst { it.id == previous }.coerceAtLeast(0))
+        binding.fpsSpinner.isEnabled = !streaming && profiles.isNotEmpty()
+        binding.startButton.isEnabled = profiles.isNotEmpty()
+        if (profiles.isEmpty()) binding.statsText.text = "Esta cámara no admite los perfiles de video disponibles."
+    }
 
     private val permissions = mutableListOf(Manifest.permission.CAMERA).apply {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -74,9 +110,20 @@ class MainActivity : AppCompatActivity() {
         binding.rotateButton.isEnabled = false
         binding.rotateButton.visibility = android.view.View.GONE
         binding.qualitySpinner.isEnabled = false
-        binding.fpsSpinner.isEnabled = false
+        binding.fpsSpinner.isEnabled = true
         binding.fpsSpinner.adapter = ArrayAdapter(this,
-            android.R.layout.simple_spinner_dropdown_item, fpsOptions)
+            android.R.layout.simple_spinner_dropdown_item, profiles.map { it.toString() })
+        binding.fpsSpinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                val profile = profiles.getOrNull(position) ?: return
+                binding.qualitySpinner.adapter = ArrayAdapter(this@MainActivity,
+                    android.R.layout.simple_spinner_dropdown_item,
+                    listOf("${profile.bitrate / 1000} kbps · máx. ${profile.transportBitrate / 1000}"))
+                if (profilesInitialized) getSharedPreferences("camstream_prefs", MODE_PRIVATE)
+                    .edit().putString("profile", profile.id).apply()
+            }
+        }
         binding.qualitySpinner.setSelection(qualityValues.indexOf(85))
         binding.fpsSpinner.setSelection(0)
         renderStatsSummary()
@@ -129,6 +176,9 @@ class MainActivity : AppCompatActivity() {
         future.addListener({
             try {
                 val provider = future.get()
+                if (streaming) return@addListener
+                previewProvider = provider
+                refreshProfiles(provider)
                 binding.facingButton.isEnabled = provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) &&
                     provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
                 val preview = CameraPreview.Builder().build().also {
@@ -166,6 +216,8 @@ class MainActivity : AppCompatActivity() {
             StreamStats.addLog("Deteniendo transmisión")
             StreamService.stop(this)
             streaming = false
+            updateFacingAvailability()
+            binding.fpsSpinner.isEnabled = true
             stopStatsPolling()
             setStatus(R.string.status_idle, false)
             binding.startButton.setText(R.string.start_stream)
@@ -184,14 +236,17 @@ class MainActivity : AppCompatActivity() {
             binding.urlLayout.error = null
             saveUrl(url)
             val quality = qualityValues[binding.qualitySpinner.selectedItemPosition]
-            val fps = fpsValues[binding.fpsSpinner.selectedItemPosition]
+            val profile = profiles.getOrNull(binding.fpsSpinner.selectedItemPosition) ?: return
+            val fps = profile.fps
             StreamStats.clearLog()
-            StreamStats.addLog("Iniciando transmisión: 1280×720 ${fps}fps, 6000kbps (máx. 8000)")
+            StreamStats.addLog("Iniciando transmisión: $profile, ${profile.bitrate / 1000}kbps")
             lastConnectionState = null
             lastPcLogAtMs = 0L
             streaming = true
+            updateFacingAvailability()
+            binding.fpsSpinner.isEnabled = false
             showOnAirIndicator()
-            StreamService.start(this, url, fps, quality, facingBack, rotationStep, mirrorEnabled)
+            StreamService.start(this, url, fps, quality, facingBack, rotationStep, mirrorEnabled, profile)
             setStatus(R.string.status_starting, true)
             binding.startButton.setText(R.string.stop_stream)
             startStatusPolling()

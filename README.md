@@ -6,6 +6,15 @@
 
 ## Versión verificada
 
+**JyroCam 1.0.3 — Perfiles HD y Full HD**:
+
+- [Release y notas](https://github.com/jyrocchi/video-app/releases/tag/v1.0.3)
+- [Descargar Windows x64](https://github.com/jyrocchi/video-app/releases/download/v1.0.3/JyroCam-Portable-1.0.3.exe)
+- [Descargar APK Android](https://github.com/jyrocchi/video-app/releases/download/v1.0.3/JyroCam-1.0.3.apk)
+- [Checksums SHA256](https://github.com/jyrocchi/video-app/releases/download/v1.0.3/checksums-1.0.3.sha256)
+
+### Versión anterior
+
 [JyroCam 1.0.2 — Compatibilidad android + resolución fija](https://github.com/jyrocchi/video-app/releases/tag/v1.0.2) incluye el portable Windows y el APK actualizado (`com.anomaly.camstream.debug`). Fuente en la rama [`compatibilidad-android-resolucion-fija`](https://github.com/jyrocchi/video-app/tree/compatibilidad-android-resolucion-fija); código del binario/tag desde `39751b0`. Se conservan los releases [1.0.1](https://github.com/jyrocchi/video-app/releases/tag/v1.0.1) y [v1.0.0-delay-v1](https://github.com/jyrocchi/video-app/releases/tag/v1.0.0-delay-v1).
 
 - [Descargar Windows x64](https://github.com/jyrocchi/video-app/releases/download/v1.0.2/JyroCam-Portable-1.0.2.exe)
@@ -14,11 +23,13 @@
 
 ## Uso
 
+La versión 1.0.3 incorpora los perfiles seleccionables. Actualiza ambos extremos; el release 1.0.2 anterior conserva la resolución fija.
+
 1. En Windows abre **JyroCam** (el portable rebrandeado o `npm start` desde `CamStreamDesktop/`). Cierra otras instancias que ocupen el puerto 8080.
 2. En el teléfono abre **JyroCam**. Por Wi-Fi usa la URL `http://<IP-del-PC>:8080` que muestra la ventana. Por USB, ejecuta `C:\Android\platform-tools\adb.exe reverse tcp:8080 tcp:8080` y utiliza `http://127.0.0.1:8080` en el teléfono.
-3. Inicia la transmisión. El perfil está fijo en **1280×720 a 30 FPS**, con bitrate H.264 objetivo 6000 kbps y techo de transporte 8000 kbps. **Rotar** está oculto/deshabilitado; cámara y espejo siguen disponibles.
+3. Antes de transmitir, elige **1280×720 / 30 FPS**, **1280×720 / 60 FPS** o **1920×1080 / 30 FPS**. Solo aparecen perfiles compatibles con la cámara y el codificador del teléfono. Los bitrates son 6/10/12 Mbps, con margen de transporte de 8/14/16 Mbps respectivamente. Detén la transmisión para cambiar de perfil. **Rotar** permanece oculto; espejo disponible en los tres perfiles.
 
-El visor, NDI y la cámara virtual DirectShow entregan **1280×720**. Tras actualizar, pulsa **Actualizar cámara virtual** si se ofrece ese botón y vuelve a abrir el consumidor. Compatibilidad funcional Android 7–17, condiciones de emulador y mediciones Wi-Fi/espejo: `CamStreamApp/COMPATIBILITY.md` y `CamStreamDesktop/PERFORMANCE.md`.
+El visor, NDI y las grabaciones siguen el perfil elegido. DirectShow ofrece los tres formatos; selecciona el mismo perfil en OBS u otro consumidor. Tras actualizar, cierra consumidores, pulsa **Actualizar cámara virtual** y vuelve a abrirlos. Reabre la captura tras cambiar resolución. Compatibilidad Android 7–17 y mediciones USB/Wi-Fi/espejo: `CamStreamApp/COMPATIBILITY.md` y `CamStreamDesktop/PERFORMANCE.md`.
 
 ## Desarrollar y generar aplicaciones
 

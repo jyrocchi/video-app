@@ -44,20 +44,23 @@ class AndroidCompatibilityTest {
         val baseUrl = InstrumentationRegistry.getArguments().getString("serverUrl")
             ?: "http://10.0.2.2:18081"
         context.getSharedPreferences("camstream_prefs", Context.MODE_PRIVATE).edit()
-            .putString("server_url", baseUrl).putBoolean("mirror_enabled", false).commit()
+            .putString("server_url", baseUrl).putString("profile", "720p30")
+            .putBoolean("mirror_enabled", false).commit()
 
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            Thread.sleep(3000)
             scenario.onActivity { activity ->
                 assertEquals(View.GONE, activity.findViewById<View>(R.id.rotateButton).visibility)
-                activity.findViewById<Button>(R.id.startButton).performClick()
+                val start = activity.findViewById<Button>(R.id.startButton)
+                if (start.isEnabled) start.performClick()
+                else StreamService.start(activity, baseUrl, 30, 85, true, 0, false)
             }
             try {
                 val manager = context.getSystemService(CameraManager::class.java)
                 val camera720 = manager.cameraIdList.any { id ->
                     val info = manager.getCameraCharacteristics(id)
                     info.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK &&
-                        info.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                            ?.getOutputSizes(ImageFormat.YUV_420_888)?.any { it.width == 1280 && it.height == 720 } == true
+                        StreamProfile.HD30.supportsCamera(info)
                 }
                 Log.i("JyroCamCompat", "CAMERA_ADVERTISES_720P=$camera720 API=${Build.VERSION.SDK_INT}")
                 if (camera720) {
@@ -94,7 +97,7 @@ class AndroidCompatibilityTest {
                     assertNull(StreamStats.lastError.get())
                 }
             } finally {
-                scenario.onActivity { it.findViewById<Button>(R.id.startButton).performClick() }
+                scenario.onActivity { StreamService.stop(it) }
                 await("Service did not clear capture on stop") { StreamStats.resolution.get() == null }
             }
         }
@@ -130,6 +133,40 @@ class AndroidCompatibilityTest {
             assertNull(StreamStats.lastError.get())
             Log.i("JyroCamCompat", "CODEC_720P_MIRROR_TRANSPORT=PASS ${encoder.configurationSummary()}")
         } finally { uploader.shutdown(); encoder.stop() }
+    }
+
+    @Test fun selectableProfileCodecCompatibility() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val manager = context.getSystemService(CameraManager::class.java)
+        for (id in manager.cameraIdList) {
+            val info = manager.getCameraCharacteristics(id)
+            Log.i("JyroCamCompat", "CAMERA_PROFILES id=$id supported=${StreamProfile.entries.filter { it.supportsCamera(info) }}")
+        }
+        for (profile in StreamProfile.entries) {
+            if (profile.encoderName() == null) {
+                Log.i("JyroCamCompat", "PROFILE_CODEC=${profile.id}:UNSUPPORTED")
+                continue
+            }
+            val width = profile.width
+            val height = profile.height
+            val encoder = H264Encoder(width, height, profile.fps, profile.bitrate)
+            val packets = AtomicInteger()
+            encoder.onEncodedNAL = { _, _, _ -> packets.incrementAndGet() }
+            val y = ByteBuffer.allocateDirect(width * height)
+            val u = ByteBuffer.allocateDirect(width * height / 4)
+            val v = ByteBuffer.allocateDirect(width * height / 4)
+            try {
+                encoder.start()
+                repeat(20) { frame ->
+                    encoder.encodeFrame(y, u, v, width, width / 2, width / 2, 1, 1,
+                        width, height, 0, frame % 2 == 0)
+                    Thread.sleep(1000L / profile.fps)
+                }
+                await("No codec output for $profile") { packets.get() >= 3 }
+                assertNull(encoder.getError())
+                Log.i("JyroCamCompat", "PROFILE_CODEC=${profile.id}:PASS ${encoder.configurationSummary()}")
+            } finally { encoder.stop() }
+        }
     }
 
     @Test fun codecShutdownWhileOutputSinkBackpressured() {

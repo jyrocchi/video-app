@@ -28,6 +28,7 @@ try {
 }
 const jpeg = require('jpeg-js');
 const { H264Decoder, WIDTH, HEIGHT, FPS } = require('./h264-decoder.js');
+const { PROFILES, getProfile } = require('./stream-profiles');
 
 const PORT = Number(process.env.CAMSTREAM_PORT) || 8080;
 const VIRTUAL_CAM_CLSID = '{B4E5B3A0-1B0C-4F8E-9D4D-8C5E7F3A2B1D}';
@@ -50,6 +51,7 @@ let ndiEnabled = false;
 let ndiSender = null;
 let ndiInitError = null;
 let h264Decoder = null;
+let activeH264Request = null;
 const h264IngressStats = {
   requests: 0,
   bytes: 0,
@@ -334,6 +336,12 @@ function createHttpServer() {
     }
 
     if (url === '/upload-h264' && req.method === 'POST') {
+      if (h264IngressStats.active) { res.writeHead(409); res.end('Stream busy'); req.resume(); return; }
+      if (h264Decoder?.profile.id !== '720p30') {
+        if (recordingProc) stopRecording();
+        h264Decoder?.stop();
+        startDecoder();
+      }
       const requestStartedAt = process.hrtime.bigint();
       const chunks = [];
       let total = 0;
@@ -366,6 +374,14 @@ function createHttpServer() {
     }
 
     if (url === '/stream-h264' && req.method === 'POST') {
+      let profile;
+      try { profile = getProfile(req.headers['x-jyrocam-profile']); }
+      catch (_) { res.writeHead(400); res.end('Unsupported video profile'); req.resume(); return; }
+      if (!h264IngressStats.active) {
+        if (recordingProc && h264Decoder?.profile.id !== profile.id) stopRecording();
+        h264Decoder?.stop();
+        startDecoder(profile.id);
+      }
       if (!h264IngressStats.active && h264Decoder && !h264Decoder.ffmpegReady) {
         h264Decoder.stop();
         h264Decoder.start();
@@ -377,6 +393,7 @@ function createHttpServer() {
         return;
       }
       h264IngressStats.active = true;
+      activeH264Request = req;
       h264IngressStats.peerAddress = req.socket.remoteAddress?.replace(/^::ffff:/, '') || null;
       req.socket.setNoDelay(true);
       req.socket.setKeepAlive(true, 10000);
@@ -395,7 +412,10 @@ function createHttpServer() {
         req.resume();
       };
       const cleanup = () => {
-        h264IngressStats.active = false;
+        if (activeH264Request === req) {
+          h264IngressStats.active = false;
+          activeH264Request = null;
+        }
         decoderProc.stdin.removeListener('drain', onDrain);
         decoderProc.removeListener('exit', onDecoderExit);
       };
@@ -480,7 +500,7 @@ function createHttpServer() {
         clients: sseClients.size,
         recording: !!recordingProc,
         fps: currentFps,
-        video: { width: WIDTH, height: HEIGHT, fps: FPS, maxBitrateKbps: 8000 },
+        video: { ...h264Decoder.profile, profiles: Object.values(PROFILES) },
         h264: {
           streamingSupported: true,
           peerAddress: h264IngressStats.peerAddress || null,
@@ -587,13 +607,14 @@ function startRecording(outputPath, fps) {
       '-y',
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',
-      '-framerate', String(FPS),
+      '-framerate', String(h264Decoder?.profile.fps || FPS),
       '-i', 'pipe:0',
       '-an',
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-pix_fmt', 'yuv420p',
-      '-b:v', '6000k', '-maxrate', '8000k', '-bufsize', '1000k',
+      '-b:v', `${h264Decoder?.profile.bitrateKbps || 6000}k`,
+      '-maxrate', `${h264Decoder?.profile.maxBitrateKbps || 8000}k`, '-bufsize', '2000k',
       '-movflags', '+faststart',
       outputPath
     ], { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
@@ -648,14 +669,14 @@ function createRecordingPath() {
   return path.join(videosPath, `JyroCam-${timestamp}.mp4`);
 }
 
-function startDecoder() {
-  h264Decoder = new H264Decoder();
+function startDecoder(profileId = '720p30') {
+  h264Decoder = new H264Decoder(profileId);
   h264Decoder.onFrame = (bgraBuf, width, height, ts) => {
     const callbackStart = process.hrtime.bigint();
     let stageStart = process.hrtime.bigint();
     if (ndiEnabled && ndiSender) {
       try {
-        ndiSender.sendBgra(bgraBuf, width, height);
+        ndiSender.sendBgra(bgraBuf, width, height, h264Decoder.profile.fps);
         pcOutputStats.ndiFrames++;
       } catch (e) {
         pcOutputStats.ndiErrors++;
@@ -667,7 +688,7 @@ function startDecoder() {
     stageStart = process.hrtime.bigint();
     if (virtualCamWriter) {
       try {
-        if (virtualCamWriter.writeBgra(bgraBuf, width, height)) pcOutputStats.virtualCamFrames++;
+        if (virtualCamWriter.writeBgra(bgraBuf, width, height, h264Decoder.profile.fps)) pcOutputStats.virtualCamFrames++;
         else pcOutputStats.virtualCamErrors++;
       } catch (e) {
         pcOutputStats.virtualCamErrors++;

@@ -1,5 +1,7 @@
 # Final Wi-Fi/mirror/Android compatibility — 2026-10-03
 
+Historical fixed-profile measurements. Current three-profile implementation and four-test matrix: `mem:streaming/selectable-profiles`.
+
 Active profile stays fixed1280x720@30, hidden Rotate, QualcommCBR6000/max H2648000. YuvFramePacker bulk camera rows + reusable mirrored arrays, correct U/V grouping. Never restore per-pixel JNI copying. Final Motorola Android14 Wi-Fi benchmark with updated libs: ON60.046s30.010FPS5970.43kbps(max6133), OFF60.033s30.000FPS5975.54kbps(max6144), no new decoder/output errors/connections and sampled FFmpeg queue0. Previous short Dozing test30FPS. Peer LAN verified; Android uses LAN URL, not adb reverse8080. CPU/Wi-Fi locks released with service.
 
 Compatibility matrix final: 3instrumented tests PASS API24–33,35,36,37.0(4KB),37.2(16KB); API34 physical Motorola. API24/25 virtual cameras do not advertise720: controlled rejection + actual MediaCodec720 synthetic mirror/network, not native camera720 claim. Android17 framework ran with emulator-only SurfaceFlinger debug.sf.luma_sampling=0 bypassing graphics readColorBufferDma assertion. Harness opt-in CAMSTREAM_EMULATOR_DISABLE_LUMA=1 only named AVD, never device/APK. Emulator37.3.2, AEHD2.2; reports/temp AVDs in approved Temp/opencode, isolated18081. Android17 now VERIFIED UNDER THESE CONDITIONS, not blocked as previous memory stated. Durable detail CamStreamApp/COMPATIBILITY.md.

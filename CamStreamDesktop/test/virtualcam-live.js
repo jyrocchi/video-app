@@ -2,11 +2,16 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const ffmpeg = require('ffmpeg-static');
+const { getProfile } = require('../stream-profiles');
+const profile = getProfile(process.argv[2]);
+const size = `${profile.width}x${profile.height}`;
 const proc = spawn(ffmpeg, [
   '-hide_banner', '-loglevel', 'warning',
-  '-f', 'dshow', '-video_size', '1280x720', '-framerate', '30',
+  '-rtbufsize', String(profile.width * profile.height * 3 * 4),
+  '-probesize', '32', '-analyzeduration', '0',
+  '-f', 'dshow', '-video_size', size, '-framerate', String(profile.fps),
   '-i', 'video=JyroCam', '-frames:v', '300',
-  '-fps_mode', 'passthrough', '-f', 'framemd5', 'pipe:1'
+  '-c:v', 'copy', '-f', 'framemd5', 'pipe:1'
 ], { windowsHide: true });
 let errors = '';
 let text = '';
@@ -36,11 +41,14 @@ proc.on('close', code => {
   clearTimeout(timer);
   try {
     assert.equal(code, 0, `${frames} frames received. ${errors}`);
-    assert.match(text, /#dimensions 0: 1280x720/);
+    assert.ok(text.includes(`#dimensions 0: ${size}`));
     assert.equal(frames, 300);
     const fps = (frames - 1) * 1000 / (lastAt - firstAt);
-    assert.ok(fps >= 29 && fps <= 31, `DirectShow delivered ${fps}fps`);
-    console.log(JSON.stringify({ output: 'DirectShow', width: 1280, height: 720,
+    console.log(JSON.stringify({ output: 'DirectShow', profile: profile.id, frames,
+      uniqueHashes: hashes.size, measuredFps: fps, errors }));
+    assert.ok(fps >= profile.fps * 0.96 && fps <= profile.fps * 1.04, `DirectShow delivered ${fps}fps`);
+    assert.ok(hashes.size >= 290, `Only ${hashes.size} distinct frames`);
+    console.log(JSON.stringify({ output: 'DirectShow', width: profile.width, height: profile.height,
       frames, uniqueHashes: hashes.size, measuredFps: fps }));
   } catch (error) { console.error(error); process.exitCode = 1; }
 });

@@ -17,7 +17,7 @@
       <span class="sep">|</span>
       <span id="fpsText">-- fps</span>
       <span class="sep">|</span>
-      <span id="resolutionText">1280×720</span>
+      <span id="resolutionText">—</span>
       <span class="sep">|</span>
       <span id="bitrateText">-- kbps H.264</span>
       <span class="sep">|</span>
@@ -191,7 +191,7 @@ recordBtn.addEventListener('click', async () => {
       const res = await window.api.stopRecording();
       if (!res.ok) alert('No se pudo detener la grabacion: ' + (res.error || ''));
     } else {
-      const res = await window.api.startRecording({ fps: 30 });
+      const res = await window.api.startRecording({});
       if (!res.ok) alert('No se pudo iniciar la grabacion: ' + (res.error || ''));
     }
   } catch (error) {

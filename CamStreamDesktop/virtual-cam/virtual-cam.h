@@ -24,7 +24,12 @@ struct SharedFrame {
 #define SHARED_FRAME_WIDTH 1280
 #define SHARED_FRAME_HEIGHT 720
 #define SHARED_FRAME_HEADER_SIZE ((DWORD)offsetof(SharedFrame, data))
-#define SHARED_FRAME_SIZE (SHARED_FRAME_HEADER_SIZE + SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT * 3)
+#define SHARED_MAX_RGB_SIZE (1920 * 1080 * 3)
+#define SHARED_FRAME_SIZE (SHARED_FRAME_HEADER_SIZE + SHARED_MAX_RGB_SIZE + 4)
+inline DWORD SharedFrameFps(const SharedFrame* frame) {
+    DWORD fps = *(const volatile DWORD*)(frame->data + SHARED_MAX_RGB_SIZE);
+    return fps == 60 ? 60 : 30;
+}
 #define SHARED_CAMERA_STATE_IDLE 0
 #define SHARED_CAMERA_STATE_CONNECTED 1
 static_assert(offsetof(SharedFrame, timestamp) == 20, "Shared memory timestamp offset mismatch");

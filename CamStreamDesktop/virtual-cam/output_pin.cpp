@@ -5,6 +5,17 @@
 #include <vfw.h>
 #include <mmsystem.h>
 
+static void SetProfileType(AM_MEDIA_TYPE* type, int index) {
+    VIDEOINFOHEADER* vih = (VIDEOINFOHEADER*)type->pbFormat;
+    const int width = index == 2 ? 1920 : 1280;
+    const int height = index == 2 ? 1080 : 720;
+    vih->bmiHeader.biWidth = width;
+    vih->bmiHeader.biHeight = height;
+    vih->bmiHeader.biSizeImage = width * height * 3;
+    vih->AvgTimePerFrame = index == 1 ? 166666 : 333333;
+    type->lSampleSize = width * height * 3;
+}
+
 class CEnumMediaTypes : public IEnumMediaTypes {
 public:
     explicit CEnumMediaTypes(const AM_MEDIA_TYPE& type, ULONG index = 0) : m_ref(1), m_index(index) {
@@ -22,20 +33,24 @@ public:
     STDMETHODIMP Next(ULONG count, AM_MEDIA_TYPE** types, ULONG* fetched) override {
         if (!types || (count != 1 && !fetched)) return E_POINTER;
         ULONG n = 0;
-        if (m_index == 0 && count) {
-            types[0] = (AM_MEDIA_TYPE*)CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE));
-            if (!types[0]) return E_OUTOFMEMORY;
-            ZeroMemory(types[0], sizeof(AM_MEDIA_TYPE));
-            HRESULT hr = CopyMediaType(types[0], &m_type);
-            if (FAILED(hr)) { CoTaskMemFree(types[0]); types[0] = NULL; return hr; }
-            ++m_index; n = 1;
+        while (m_index < 3 && n < count) {
+            types[n] = (AM_MEDIA_TYPE*)CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE));
+            if (!types[n]) return E_OUTOFMEMORY;
+            ZeroMemory(types[n], sizeof(AM_MEDIA_TYPE));
+            HRESULT hr = CopyMediaType(types[n], &m_type);
+            if (FAILED(hr)) { CoTaskMemFree(types[n]); types[n] = NULL; return hr; }
+            const VIDEOINFOHEADER* vih = (const VIDEOINFOHEADER*)m_type.pbFormat;
+            int preferred = vih->bmiHeader.biWidth == 1920 ? 2 : (vih->AvgTimePerFrame < 200000 ? 1 : 0);
+            SetProfileType(types[n], (preferred + m_index) % 3);
+            ++m_index; ++n;
         }
         if (fetched) *fetched = n;
         return n == count ? S_OK : S_FALSE;
     }
     STDMETHODIMP Skip(ULONG count) override {
-        if (m_index == 0 && count) { m_index = 1; return count == 1 ? S_OK : S_FALSE; }
-        return S_FALSE;
+        ULONG remaining = 3 - m_index;
+        m_index += count < remaining ? count : remaining;
+        return count <= remaining ? S_OK : S_FALSE;
     }
     STDMETHODIMP Reset() override { m_index = 0; return S_OK; }
     STDMETHODIMP Clone(IEnumMediaTypes** result) override {
@@ -158,6 +173,8 @@ void COutputPin::BuildMediaType(AM_MEDIA_TYPE* pmt) {
     pmt->lSampleSize = SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT * 3;
     pmt->cbFormat = sizeof(VIDEOINFOHEADER);
     pmt->pbFormat = (BYTE*)vih;
+    if (m_pSharedFrame) SetProfileType(pmt, m_pSharedFrame->width == 1920 ? 2 :
+        (SharedFrameFps(m_pSharedFrame) == 60 ? 1 : 0));
 }
 
 STDMETHODIMP COutputPin::Connect(IPin* pReceivePin, const AM_MEDIA_TYPE* pmt) {
@@ -292,11 +309,15 @@ STDMETHODIMP COutputPin::QueryAccept(const AM_MEDIA_TYPE* pmt) {
     if (pmt->formattype != FORMAT_VideoInfo || !pmt->pbFormat ||
         pmt->cbFormat < sizeof(VIDEOINFOHEADER)) return VFW_E_TYPE_NOT_ACCEPTED;
     const VIDEOINFOHEADER* vih = (const VIDEOINFOHEADER*)pmt->pbFormat;
-    if (vih->bmiHeader.biWidth != SHARED_FRAME_WIDTH ||
-        vih->bmiHeader.biHeight != SHARED_FRAME_HEIGHT ||
+    const LONG width = vih->bmiHeader.biWidth, height = vih->bmiHeader.biHeight;
+    const bool hd = width == 1280 && height == 720;
+    const bool fhd = width == 1920 && height == 1080;
+    if (!(hd || fhd) ||
+        !(vih->AvgTimePerFrame == 333333 || (hd && vih->AvgTimePerFrame == 166666)) ||
         vih->bmiHeader.biBitCount != 24 ||
         vih->bmiHeader.biCompression != BI_RGB ||
-        pmt->lSampleSize != SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT * 3)
+        vih->bmiHeader.biSizeImage != width * height * 3 ||
+        pmt->lSampleSize != width * height * 3)
         return VFW_E_TYPE_NOT_ACCEPTED;
     return S_OK;
 }
@@ -343,38 +364,43 @@ STDMETHODIMP COutputPin::GetFormat(AM_MEDIA_TYPE** ppmt) {
 
 STDMETHODIMP COutputPin::GetNumberOfCapabilities(int* piCount, int* piSize) {
     if (!piCount || !piSize) return E_POINTER;
-    *piCount = 1;
+    *piCount = 3;
     *piSize = sizeof(VIDEO_STREAM_CONFIG_CAPS);
     return S_OK;
 }
 
 STDMETHODIMP COutputPin::GetStreamCaps(int iIndex, AM_MEDIA_TYPE** ppmt, BYTE* pSCC) {
-    if (iIndex != 0 || !ppmt) return E_INVALIDARG;
+    if (iIndex < 0 || iIndex >= 3 || !ppmt) return E_INVALIDARG;
     *ppmt = (AM_MEDIA_TYPE*)CoTaskMemAlloc(sizeof(AM_MEDIA_TYPE));
     if (!*ppmt) return E_OUTOFMEMORY;
     HRESULT hr = CopyMediaType(*ppmt, &m_mt);
     if (FAILED(hr)) { CoTaskMemFree(*ppmt); *ppmt = NULL; return hr; }
+    SetProfileType(*ppmt, iIndex);
+    const VIDEOINFOHEADER* vih = (const VIDEOINFOHEADER*)(*ppmt)->pbFormat;
     if (pSCC) {
         VIDEO_STREAM_CONFIG_CAPS* caps = (VIDEO_STREAM_CONFIG_CAPS*)pSCC;
         ZeroMemory(caps, sizeof(*caps));
         caps->guid = FORMAT_VideoInfo;
         caps->VideoStandard = AnalogVideo_None;
-        caps->InputSize.cx = SHARED_FRAME_WIDTH;
-        caps->InputSize.cy = SHARED_FRAME_HEIGHT;
-        caps->MinOutputSize.cx = SHARED_FRAME_WIDTH;
-        caps->MinOutputSize.cy = SHARED_FRAME_HEIGHT;
-        caps->MaxOutputSize.cx = SHARED_FRAME_WIDTH;
-        caps->MaxOutputSize.cy = SHARED_FRAME_HEIGHT;
-        caps->MinFrameInterval = 333333;
-        caps->MaxFrameInterval = 333333;
-        caps->MinBitsPerSecond = 1000000;
-        caps->MaxBitsPerSecond = 10000000;
+        caps->InputSize.cx = caps->MinOutputSize.cx = caps->MaxOutputSize.cx = vih->bmiHeader.biWidth;
+        caps->InputSize.cy = caps->MinOutputSize.cy = caps->MaxOutputSize.cy = vih->bmiHeader.biHeight;
+        caps->MinFrameInterval = caps->MaxFrameInterval = vih->AvgTimePerFrame;
+        caps->MinBitsPerSecond = caps->MaxBitsPerSecond =
+            (LONG)((LONGLONG)(*ppmt)->lSampleSize * 8 * (iIndex == 1 ? 60 : 30));
     }
     return S_OK;
 }
 
 STDMETHODIMP COutputPin::SetFormat(AM_MEDIA_TYPE* pmt) {
-    return QueryAccept(pmt);
+    HRESULT hr = QueryAccept(pmt);
+    if (FAILED(hr)) return hr;
+    if (m_pConnectedPin) return VFW_E_ALREADY_CONNECTED;
+    AM_MEDIA_TYPE next = {};
+    hr = CopyMediaType(&next, pmt);
+    if (FAILED(hr)) return hr;
+    FreeMediaType(m_mt);
+    m_mt = next;
+    return S_OK;
 }
 
 STDMETHODIMP COutputPin::Get(REFGUID propSet, DWORD id, LPVOID, DWORD,
@@ -414,17 +440,22 @@ void COutputPin::DeliveryLoop() {
     QueryPerformanceCounter(&epoch);
     LONGLONG frameIndex = 0;
     DWORD64 lastTimestamp = 0;
+    const VIDEOINFOHEADER* output = (const VIDEOINFOHEADER*)m_mt.pbFormat;
+    const int fps = output->AvgTimePerFrame < 200000 ? 60 : 30;
     while (!m_bShutdown) {
         QueryPerformanceCounter(&now);
-        const LONGLONG due = epoch.QuadPart + frameIndex * frequency.QuadPart / 30;
-        if (now.QuadPart < due) {
+        const LONGLONG due = epoch.QuadPart + frameIndex * frequency.QuadPart / fps;
+        // The producer already runs at the sensor cadence. A second 60Hz
+        // gate can discard fresh frames when Wi-Fi arrival jitter crosses a
+        // deadline. Only pace here when a client explicitly requests 30 of 60.
+        if (SharedFrameFps(m_pSharedFrame) > (DWORD)fps && now.QuadPart < due) {
             DWORD waitMs = (DWORD)((due - now.QuadPart) * 1000 / frequency.QuadPart);
             Sleep(waitMs > 0 ? waitMs : 1);
             continue;
         }
         // Skip elapsed deadlines instead of emitting catch-up bursts.
-        if (now.QuadPart - due > frequency.QuadPart / 30) {
-            epoch.QuadPart = now.QuadPart - frameIndex * frequency.QuadPart / 30;
+        if (now.QuadPart - due > frequency.QuadPart / fps) {
+            epoch.QuadPart = now.QuadPart - frameIndex * frequency.QuadPart / fps;
         }
         // A connection is not a running graph. Delivering in Connect races
         // consumer initialization (notably FFmpeg's capture callback).
@@ -433,6 +464,11 @@ void COutputPin::DeliveryLoop() {
             continue;
         }
         const DWORD64 availableTimestamp = *(volatile DWORD64*)&m_pSharedFrame->timestamp;
+        if (m_pSharedFrame->width != (DWORD)output->bmiHeader.biWidth ||
+            m_pSharedFrame->height != (DWORD)output->bmiHeader.biHeight) {
+            Sleep(10); // Consumer must reconnect after a resolution change.
+            continue;
+        }
         if (!availableTimestamp || availableTimestamp == lastTimestamp) {
             Sleep(1);
             continue;
@@ -453,11 +489,12 @@ void COutputPin::DeliveryLoop() {
 
         DWORD w, h;
         DWORD64 ts;
-        if (SharedMemory_ReadFrame(m_pSharedFrame, pData, m_mt.lSampleSize, &w, &h, &ts)) {
+        if (SharedMemory_ReadFrame(m_pSharedFrame, pData, m_mt.lSampleSize, &w, &h, &ts) &&
+            w == (DWORD)output->bmiHeader.biWidth && h == (DWORD)output->bmiHeader.biHeight) {
             lastTimestamp = ts;
             InterlockedExchange((volatile LONG*)&m_pSharedFrame->cameraState, SHARED_CAMERA_STATE_CONNECTED);
             REFERENCE_TIME start = m_rtNextSample;
-            REFERENCE_TIME end = start + (10000000LL * (frameIndex + 1) / 30 - 10000000LL * frameIndex / 30);
+            REFERENCE_TIME end = start + (10000000LL * (frameIndex + 1) / fps - 10000000LL * frameIndex / fps);
             m_rtNextSample = end;
             pSample->SetTime(&start, &end);
             pSample->SetSyncPoint(TRUE);

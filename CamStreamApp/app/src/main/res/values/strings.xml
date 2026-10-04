@@ -11,7 +11,7 @@
     <string name="status_streaming">Transmitiendo</string>
     <string name="status_error">Error de conexión</string>
     <string name="quality_label">Calidad</string>
-    <string name="fps_label">FPS</string>
+    <string name="fps_label">Resolución / FPS</string>
     <string name="facing_back">Trasera</string>
     <string name="facing_front">Frontal</string>
     <string name="rotate_0">Horizontal</string>

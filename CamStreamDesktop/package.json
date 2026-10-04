@@ -1,11 +1,11 @@
 {
   "name": "jyrocam-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "JyroCam: visor, grabador y camara virtual",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test/virtual-cam-color.js && node test/decoder-resolution.js && node test/stream-integration.js",
+    "test": "node test/virtual-cam-color.js && node test/decoder-resolution.js && node test/stream-integration.js && node test/stream-integration.js 720p60 && node test/stream-integration.js 1080p30",
     "build": "electron-builder --win portable --x64",
     "pack": "electron-builder --dir --win --x64"
   },
@@ -35,6 +35,7 @@
       "build-assets/jyrocam.ico",
       "ndi-sender.js",
       "h264-decoder.js",
+      "stream-profiles.js",
       "virtual-cam-writer.js",
       "virtual-cam/bin/JyroCamVirtualCam.dll",
       "node_modules/**/*",

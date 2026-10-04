@@ -34,6 +34,7 @@ extern "C" SharedFrame* SharedMemory_Open() {
         frame->timestamp = 0;
         frame->dataSize = SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT * 3;
         ZeroMemory(frame->data, frame->dataSize);
+        *(DWORD*)(frame->data + SHARED_MAX_RGB_SIZE) = 30;
     }
     return frame;
 }
@@ -49,15 +50,17 @@ extern "C" BOOL SharedMemory_ReadFrame(SharedFrame* frame, BYTE* dest, DWORD des
     const DWORD64 timestamp = *(volatile DWORD64*)&frame->timestamp;
     if (!timestamp) return FALSE;
     MemoryBarrier();
-    if (frame->width != SHARED_FRAME_WIDTH || frame->height != SHARED_FRAME_HEIGHT ||
-        frame->stride != SHARED_FRAME_WIDTH * 3 ||
-        frame->dataSize != SHARED_FRAME_WIDTH * SHARED_FRAME_HEIGHT * 3 ||
-        frame->dataSize > destSize) return FALSE;
-    memcpy(dest, frame->data, frame->dataSize);
+    // Snapshot sizes once: a concurrent profile change must never enlarge the
+    // memcpy after the destination capacity check.
+    const DWORD width = frame->width, height = frame->height;
+    const DWORD stride = frame->stride, dataSize = frame->dataSize;
+    if (!((width == 1280 && height == 720) || (width == 1920 && height == 1080)) ||
+        stride != width * 3 || dataSize != width * height * 3 || dataSize > destSize) return FALSE;
+    memcpy(dest, frame->data, dataSize);
     MemoryBarrier();
     if (timestamp != *(volatile DWORD64*)&frame->timestamp) return FALSE;
-    if (outWidth) *outWidth = frame->width;
-    if (outHeight) *outHeight = frame->height;
+    if (outWidth) *outWidth = width;
+    if (outHeight) *outHeight = height;
     if (outTimestamp) *outTimestamp = timestamp;
     return TRUE;
 }

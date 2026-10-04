@@ -1,5 +1,7 @@
 # JyroCam 720p30 profile
 
+Historical fixed-profile record. Current selectable profiles and validation: `mem:streaming/selectable-profiles`.
+
 Active apps are CamStreamApp (Kotlin/CameraX/MediaCodec) and CamStreamDesktop (Electron/FFmpeg/DirectShow/NDI), not root web prototype. As of 2026-10-03 fixed 1280x720 at 30 FPS; Rotate hidden/disabled, orientation fixed. Qualcomm c2.qti.avc.encoder on Motorola edge 30 fusion confirms CBR 6000 kbps. FrameUploader paces compressed H264 at 8000 kbps max and preserves NAL order with bounded backpressure, repeats SPS/PPS every IDR for reconnect.
 
 PC h264-decoder.js uses native FFmpeg BGRA + MJPEG pipes, RawFrameParser/JpegFrameParser, monotonic setpts and waits for SPS before feeding mid-GOP data. Do not reintroduce BMP decoding or jpeg-js encode in main thread. NDI clock_video false and alternating buffers. DirectShow 1280x720 RGB24, rational 30Hz deadline, waits for fresh timestamp and running graph; writer publishes pixels before timestamp and preserves cameraState. Koffi 2.x pointers are External objects, normalize with koffi.address before arithmetic.

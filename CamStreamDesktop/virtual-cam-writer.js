@@ -4,7 +4,8 @@ const SHARED_MEM_NAME = 'Local\\CamStreamVirtualCam_Frame';
 const FRAME_WIDTH = 1280;
 const FRAME_HEIGHT = 720;
 const RGB_SIZE = FRAME_WIDTH * FRAME_HEIGHT * 3;
-const SHARED_FRAME_SIZE = 32 + RGB_SIZE;
+const MAX_RGB_SIZE = 1920 * 1080 * 3;
+const SHARED_FRAME_SIZE = 32 + MAX_RGB_SIZE + 4;
 const ZERO_TIMESTAMP = Buffer.alloc(8);
 
 class VirtualCamWriter {
@@ -68,6 +69,7 @@ class VirtualCamWriter {
     this.staging.writeUInt32LE(0, 16);              // no active DirectShow client
     this.staging.writeBigUInt64LE(BigInt(Date.now()), 20); // timestamp
     this.staging.writeUInt32LE(RGB_SIZE, 28);       // dataSize
+    this.staging.writeUInt32LE(30, 32 + MAX_RGB_SIZE); // protocol v2 cadence extension
   }
 
   write(rgba, w, h) {
@@ -101,10 +103,11 @@ class VirtualCamWriter {
     }
   }
 
-  writeBgra(bgra, w, h) {
-    if (!this.opened || w !== FRAME_WIDTH || h !== FRAME_HEIGHT || bgra.length !== w * h * 4) return false;
+  writeBgra(bgra, w, h, fps = 30) {
+    if (!this.opened || !((w === 1280 && h === 720 && (fps === 30 || fps === 60)) ||
+        (w === 1920 && h === 1080 && fps === 30)) || bgra.length !== w * h * 4) return false;
     try {
-      const dw = FRAME_WIDTH, dh = FRAME_HEIGHT;
+      const dw = w, dh = h;
       const sw = w, sh = h;
       const dst = this.staging;
       const offset = 32;
@@ -122,6 +125,11 @@ class VirtualCamWriter {
           dstIdx += 3;
         }
       }
+      this.staging.writeUInt32LE(w, 4);
+      this.staging.writeUInt32LE(h, 8);
+      this.staging.writeUInt32LE(w * 3, 12);
+      this.staging.writeUInt32LE(w * h * 3, 28);
+      this.staging.writeUInt32LE(fps, 32 + MAX_RGB_SIZE);
       this.staging.writeBigUInt64LE(BigInt(Date.now()), 20);
       this.flushToSharedMemory();
       return true;
@@ -149,7 +157,8 @@ class VirtualCamWriter {
     const address = typeof this.view === 'bigint' ? this.view : koffi.address(this.view);
     this.RtlMoveMemory(address + 20n, ZERO_TIMESTAMP, 8);
     this.RtlMoveMemory(this.view, this.staging.subarray(0, 16), 16);
-    this.RtlMoveMemory(address + 28n, this.staging.subarray(28), SHARED_FRAME_SIZE - 28);
+    this.RtlMoveMemory(address + 28n, this.staging.subarray(28), 4 + this.staging.readUInt32LE(28));
+    this.RtlMoveMemory(address + BigInt(32 + MAX_RGB_SIZE), this.staging.subarray(32 + MAX_RGB_SIZE), 4);
     this.RtlMoveMemory(address + 20n, this.staging.subarray(20, 28), 8);
   }
 

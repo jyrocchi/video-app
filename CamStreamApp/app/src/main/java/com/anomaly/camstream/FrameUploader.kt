@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
-class FrameUploader(private val baseUrl: String) {
+class FrameUploader(private val baseUrl: String, private val profile: StreamProfile = StreamProfile.HD30) {
 
     private data class UploadPacket(val data: ByteArray, val enqueuedAtNs: Long)
 
@@ -94,8 +94,15 @@ class FrameUploader(private val baseUrl: String) {
             connection.readTimeout = 1000
             val supported = try {
                 connection.inputStream.bufferedReader().use { reader ->
-                    org.json.JSONObject(reader.readText()).optJSONObject("h264")
-                        ?.optBoolean("streamingSupported", false) == true
+                    val status = org.json.JSONObject(reader.readText())
+                    val profiles = status.optJSONObject("video")?.optJSONArray("profiles")
+                    if (profile != StreamProfile.HD30 && (profiles == null ||
+                            (0 until profiles.length()).none { profiles.optJSONObject(it)?.optString("id") == profile.id })) {
+                        StreamStats.lastError.set("Actualiza JyroCam PC para transmitir $profile")
+                        stopped = true
+                        frameChannel.cancel()
+                    }
+                    status.optJSONObject("h264")?.optBoolean("streamingSupported", false) == true
                 }
             } finally { connection.disconnect() }
             streamingSupported = supported
@@ -119,6 +126,7 @@ class FrameUploader(private val baseUrl: String) {
                     doOutput = true
                     useCaches = false
                     setRequestProperty("Content-Type", "application/x-h264-framed")
+                    setRequestProperty("X-JyroCam-Profile", profile.id)
                     setChunkedStreamingMode(16 * 1024)
                 }
                 streamConnection = c
@@ -126,11 +134,11 @@ class FrameUploader(private val baseUrl: String) {
                 StreamStats.addLog("Flujo H.264 persistente conectado")
             }
             // Each Annex-B NAL is length-prefixed; the desktop reassembles HTTP chunks.
-            // Pace the compressed transport at <=8Mbps; never throw away reference NALs.
+            // Profile-specific pacing with headroom for IDR bursts; preserve reference NALs.
             val nowNs = SystemClock.elapsedRealtimeNanos()
             val waitNs = nextWriteNs - nowNs
             if (waitNs > 0) Thread.sleep(waitNs / 1_000_000L, (waitNs % 1_000_000L).toInt())
-            nextWriteNs = maxOf(nextWriteNs, nowNs) + (data.size + 4L) * 8L * 1_000_000_000L / MAX_BITRATE
+            nextWriteNs = maxOf(nextWriteNs, nowNs) + (data.size + 4L) * 8L * 1_000_000_000L / profile.transportBitrate
             streamOutput!!.writeInt(data.size)
             streamOutput!!.write(data)
             streamOutput!!.flush()
@@ -257,6 +265,5 @@ class FrameUploader(private val baseUrl: String) {
         private const val WORKER_COUNT = 1
         private const val CHANNEL_CAPACITY = 12
         private const val MAX_ATTEMPTS = 2
-        private const val MAX_BITRATE = 8_000_000L
     }
 }

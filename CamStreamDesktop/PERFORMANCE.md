@@ -1,5 +1,7 @@
 # Perfil 720p30 — verificación del 3 de octubre de 2026
 
+**Registro histórico.** La implementación vigente y sus resultados USB/Wi-Fi están en la sección [Perfiles seleccionables](#perfiles-seleccionables--validación-local-2026-10-03) al final de este documento.
+
 ## Configuración
 
 - Motorola edge 30 fusion (`tundra`) conectado por USB/ADB reverse.
@@ -95,3 +97,61 @@ Tres pruebas instrumentadas por imagen, repetidas sobre API 24–33, 35–36 y A
 Resolución exacta 1280×720; cola FFmpeg 0 bytes en las muestras; sin nuevas conexiones ni errores de salida. Logs del Motorola: sensor/captura 30 FPS, `inputStarve=0`, `drop=0`, `reconnect=0`; copia YUV ~1,8 ms sin espejo y ~6 ms con espejo en las muestras posteriores a la actualización. Ambos quedan holgadamente por debajo de los 33,3 ms de un cuadro a 30 FPS.
 
 La captura DirectShow bajo esta sesión llegó a ~29,03–29,20 FPS mientras el productor seguía a 30. La cadencia dependía del `Sleep(1)` del proceso consumidor, que Windows puede redondear a ~15,6 ms. El filtro ahora solicita resolución de temporizador de 1 ms durante la captura y la libera al cerrar; también reintenta antes una copia concurrente rechazada. Compilado con `winmm.lib`, registrado y probado: **300 cuadros 1280×720, 300 hashes distintos, 29,927 FPS**. Los relojes y la llegada por Wi-Fi conservan pequeñas variaciones; los contadores reflejan el ritmo medido, no un FPS fijado artificialmente.
+# Perfiles seleccionables — validación local 2026-10-03
+
+Esta sección sustituye el perfil fijo de las mediciones históricas anteriores, conservadas como referencia.
+
+## Calidad y ancho de banda
+
+| Perfil | H.264 objetivo | Pacing sostenido del transporte | Nivel AVC Baseline |
+| --- | ---: | ---: | --- |
+| 1280×720 / 30 FPS | 6 Mbps | 8 Mbps | 3.1 |
+| 1280×720 / 60 FPS | 10 Mbps | 14 Mbps | 3.2 |
+| 1920×1080 / 30 FPS | 12 Mbps | 16 Mbps | 4.0 |
+
+Referencia consultada: [recomendaciones SDR de YouTube](https://support.google.com/youtube/answer/1722171?hl=es): 5 Mbps para 720p30, 7,5 Mbps para 720p60 y 8 Mbps para 1080p30. Es una referencia de subida con perfil High/B-frames, no un requisito de JyroCam. Se eligió margen adicional para nuestro Baseline de baja latencia, GOP de un segundo y escenas con movimiento: 6/10/12 Mbps. En el Motorola el codec Qualcomm confirmó CBR. Codecs sin CBR conservan VBR. No hay un bitrate universal que garantice toda escena o red.
+
+El pacing conserva margen para IDR sin perder NAL predictivas; no limita los picos físicos de paquetes TCP. Conviene disponer de al menos ~12/20/24 Mbps **útiles y estables** de teléfono a PC para los tres perfiles respectivamente; es margen recomendado, no una velocidad mínima medida. Preferir Wi-Fi 5 GHz cercano al router; la velocidad anunciada del enlace no es throughput útil. NDI y MJPEG tienen caudales propios, diferentes del H.264 Android-PC.
+
+## Mediciones reales
+
+Motorola edge 30 fusion, Android 14, Qualcomm `c2.qti.avc.encoder`; PC Ethernet `192.168.1.81`, teléfono Wi-Fi `192.168.1.87`. Cada fila mide ~60 segundos después de calentamiento. USB confirma peer `127.0.0.1`; Wi-Fi confirma peer `192.168.1.87` aun con ADB conectado para controlar las pruebas. La matriz de emuladores se ejecutó separadamente de las mediciones físicas.
+
+| Perfil / enlace / espejo | FPS decode | FPS JPEG | FPS render ACK | H.264 medio Mbps | Cola FFmpeg máx. muestreada |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 720p30 USB, sin espejo | 30,008 | 30,008 | 30,008 | 6,000 | 24032 B |
+| 720p30 Wi-Fi, espejo | 30,013 | 30,013 | 30,013 | 5,997 | 0 B |
+| 720p60 USB, sin espejo, empaquetado final | 60,023 | 60,023 | 59,956 | 9,942 | 19568 B |
+| 720p60 Wi-Fi, sin espejo | 60,019 | 60,019 | 60,002 | 9,940 | 0 B |
+| 720p60 Wi-Fi, espejo | 60,007 | 60,007 | 60,007 | 9,985 | 0 B |
+| 1080p30 USB, sin espejo | 30,006 | 30,006 | 30,006 | 11,996 | 52400 B |
+| 1080p30 Wi-Fi, espejo, empaquetado final | 29,994 | 30,011 | 29,994 | 12,008 | 0 B |
+
+Todas las filas aprobaron: cero reconexiones durante la ventana, decoder sin error y contadores de error NDI/DirectShow sin incrementos. Máximos de bitrate por muestra de 2 s: 6,244 / 10,058 / 12,357 Mbps para USB 720p30/720p60/1080p30, dentro de sus márgenes. Los picos breves de cola no crecieron sostenidamente. Las llamadas al emisor NDI se verificaron; no se midió un receptor NDI independiente.
+
+DirectShow real (FFmpeg, **300 cuadros / 300 hashes distintos** por ensayo): 720p30 USB **29,975 FPS**, 720p60 Wi-Fi **60,137 FPS**, 720p60 USB empaquetado final **60,016 FPS**, 1080p30 Wi-Fi empaquetado final **30,011 FPS**. El buffer predeterminado de FFmpeg solo admitía aproximadamente un cuadro 720p y descartaba muestras a 60 FPS; el harness ahora reserva cuatro cuadros y usa copia de paquetes para MD5, sin recodificación. La DLL sigue la llegada de cuadros nuevos; solo aplica limitación de cadencia si el consumidor pide 30 a un productor de 60.
+
+No se midió latencia absoluta cámara-pantalla, autonomía térmica durante horas ni todas las condiciones de iluminación/interferencia. Los resultados son del dispositivo/red descritos; no confundir la configuración o una cola vacía con entrega garantizada en cualquier hardware.
+
+## Integridad y reproducción
+
+- `npm test`: parsers partidos, dimensiones BGRA/JPEG de los tres perfiles, publicación/color de memoria compartida, HTTP persistente y MP4 decodificable con dimensiones/FPS correctos en cada perfil.
+- Android: `assembleDebug`, `assembleDebugAndroidTest`, `testDebugUnitTest`, `lintDebug` aprobados. Matriz API 24–33/35/36/37.0/37.2: 4/4 por imagen; detalles en `../CamStreamApp/COMPATIBILITY.md`.
+- DLL C++ compilada, registrada por hash y ejecutable empaquetado generado con `npm run build`. APK final instalado en el Motorola; prueba final del empaquetado a 720p60 USB y 1080p30 Wi-Fi.
+- Elegir perfil antes de transmitir. Tras cambiar resolución, reabrir el consumidor DirectShow con el formato correspondiente. La grabación activa se finaliza al cambiar de perfil.
+
+```powershell
+# Requiere el APK y su APK de instrumentación instalados, escritorio en 8080.
+# Variables opcionales: ANDROID_SERIAL, ADB, JYROCAM_LAN_IP.
+node test/profile-live.js 720p30 usb false 60
+node test/profile-live.js 720p30 wifi true 60
+node test/profile-live.js 720p60 usb false 60
+node test/profile-live.js 720p60 wifi true 60
+node test/profile-live.js 1080p30 usb false 60
+$env:JYROCAM_TEST_DIRECTSHOW='1'
+node test/profile-live.js 1080p30 wifi true 60
+```
+
+Evidencia JSON, logs Android e instrumentación en `%TEMP%/opencode/jyrocam-<perfil>-<enlace>-mirror-<true|false>*`. Estos datos locales no se incluyen en el portable. La validación inicial utilizó un empaquetado local 1.0.2 con el código nuevo; la distribución de estos cambios corresponde a **1.0.3**, con recompilación de ambos extremos. Notas en `../RELEASE_NOTES_1.0.3.md` y hashes en `../checksums-1.0.3.sha256`; los descargables históricos se conservan.
+
+---

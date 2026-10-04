@@ -4,10 +4,10 @@ const ffmpeg = require('ffmpeg-static');
 const { H264Decoder, RawFrameParser, JpegFrameParser, WIDTH, HEIGHT } = require('../h264-decoder');
 const jpeg = require('jpeg-js');
 
-function createH264(width, height) {
+function createH264(width, height, fps = 30) {
   const result = spawnSync(ffmpeg, [
     '-loglevel', 'error',
-    '-f', 'lavfi', '-i', `testsrc2=size=${width}x${height}:rate=30`,
+    '-f', 'lavfi', '-i', `testsrc2=size=${width}x${height}:rate=${fps}`,
     '-frames:v', '60', '-pix_fmt', 'yuv420p', '-c:v', 'libx264',
     '-preset', 'ultrafast', '-tune', 'zerolatency', '-f', 'h264', 'pipe:1'
   ], { maxBuffer: 16 * 1024 * 1024 });
@@ -15,11 +15,12 @@ function createH264(width, height) {
   return result.stdout;
 }
 
-async function assertDecodedSize(width, height) {
-  const decoder = new H264Decoder();
+async function assertDecodedSize(width, height, profileId = '720p30') {
+  const decoder = new H264Decoder(profileId);
+  const { width: WIDTH, height: HEIGHT, fps } = decoder.profile;
   let rawFrames = 0;
   let jpegFrames = 0;
-  const encoded = createH264(width, height);
+  const encoded = createH264(width, height, fps);
   const decoded = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`Timed out decoding ${width}x${height}`)), 10000);
     const complete = () => {
@@ -68,7 +69,10 @@ async function assertDecodedSize(width, height) {
   assert.deepEqual(Buffer.concat(jpegParsed), images);
   await assertDecodedSize(1280, 720);
   await assertDecodedSize(640, 480);
-  console.log('Native 720p decoder: 60/60 BGRA + JPEG frames, split frame boundaries: OK');
+  await assertDecodedSize(1280, 720, '720p60');
+  await assertDecodedSize(1920, 1080, '1080p30');
+  assert.throws(() => new H264Decoder('1080p60'));
+  console.log('All profiles: 60/60 BGRA + JPEG frames, split frame boundaries: OK');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

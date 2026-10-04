@@ -8,6 +8,8 @@ const childProcess = require('node:child_process');
 const { spawn, spawnSync } = childProcess;
 const Module = require('node:module');
 const jpeg = require('jpeg-js');
+const { getProfile } = require('../stream-profiles');
+const profile = getProfile(process.argv[2]);
 
 process.env.CAMSTREAM_PORT = '18080';
 const port = Number(process.env.CAMSTREAM_PORT);
@@ -88,7 +90,7 @@ require('../main');
 function request(url, method = 'GET', body) {
   return new Promise((resolve, reject) => {
     const req = http.request(`http://127.0.0.1:${port}${url}`, {
-      method, headers: body ? { 'Content-Type': 'video/h264' } : {}
+      method, headers: body ? { 'Content-Type': 'video/h264', 'X-JyroCam-Profile': profile.id } : {}
     }, res => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
@@ -139,7 +141,7 @@ async function run() {
 
   const ffmpeg = require('ffmpeg-static');
   const source = spawn(ffmpeg, [
-    '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30',
+    '-loglevel', 'error', '-f', 'lavfi', '-i', `testsrc2=size=${profile.width}x${profile.height}:rate=${profile.fps}`,
     '-frames:v', '45', '-c:v', 'libx264', '-preset', 'ultrafast',
     '-tune', 'zerolatency', '-f', 'h264', 'pipe:1'
   ]);
@@ -152,7 +154,10 @@ async function run() {
   if (source.exitCode === null) await new Promise(resolve => source.once('close', resolve));
   assert.equal(source.exitCode, 0, Buffer.concat(stderr).toString());
 
-  const recording = await handlers.get('start-recording')({}, { fps: 15 });
+   assert.equal((await request('/stream-h264', 'POST', Buffer.alloc(0))).status, 200);
+   const negotiated = JSON.parse((await request('/status')).body).video;
+   assert.equal(negotiated.id, profile.id);
+   const recording = await handlers.get('start-recording')({}, { fps: 15 });
   assert.equal(recording.ok, true, recording.error);
   assert.equal(path.dirname(recording.path), videosDir);
   assert.equal(path.extname(recording.path), '.mp4');
@@ -167,7 +172,7 @@ async function run() {
   const decodedBeforeStream = JSON.parse((await request('/status')).body).h264.decoder.framesDecoded;
   const streamed = await new Promise((resolve, reject) => {
     const req = http.request(`http://127.0.0.1:${port}/stream-h264`, {
-      method: 'POST', headers: { 'Content-Type': 'application/x-h264-framed' }
+      method: 'POST', headers: { 'Content-Type': 'application/x-h264-framed', 'X-JyroCam-Profile': profile.id }
     }, res => {
       res.resume();
       res.on('end', () => resolve(res.statusCode));
@@ -201,8 +206,8 @@ async function run() {
   assert.ok(decodedFrames >= decodedBeforeStream + 12,
     'Too few decoded frames reached the recorder');
    const decodedJpeg = jpeg.decode(Buffer.from(frame.b64, 'base64'));
-   assert.equal(decodedJpeg.width, 1280);
-   assert.equal(decodedJpeg.height, 720);
+    assert.equal(decodedJpeg.width, profile.width);
+    assert.equal(decodedJpeg.height, profile.height);
   const status = JSON.parse((await request('/status')).body);
   assert.equal(status.connected, true);
   assert.ok(status.h264.requests > 0, 'H264 ingress metrics were not recorded');
@@ -222,14 +227,17 @@ async function run() {
     events.find(event => event.type === 'recording-error')?.message || 'Recording did not finalize');
   assert.ok(fs.statSync(recording.path).size > 0, 'Recording file is empty');
   const probe = spawnSync(ffmpeg, ['-v', 'error', '-i', recording.path, '-f', 'null', '-']);
-  assert.equal(probe.status, 0, Buffer.concat([probe.stdout || Buffer.alloc(0), probe.stderr || Buffer.alloc(0)]).toString());
+   assert.equal(probe.status, 0, Buffer.concat([probe.stdout || Buffer.alloc(0), probe.stderr || Buffer.alloc(0)]).toString());
+   const metadata = spawnSync(ffmpeg, ['-v', 'info', '-i', recording.path, '-f', 'null', '-'], { encoding: 'utf8' });
+   assert.ok(metadata.stderr.includes(`${profile.width}x${profile.height}`), metadata.stderr);
+   assert.ok(metadata.stderr.includes(`${profile.fps} fps`), metadata.stderr);
 
   assert.deepEqual(await handlers.get('open-folder')(), { ok: true, path: videosDir });
   assert.equal(openedFolder, videosDir);
   fs.rmSync(videosDir, { recursive: true, force: true });
   fs.rmSync(userDataDir, { recursive: true, force: true });
   os.networkInterfaces = originalNetworkInterfaces;
-  console.log('H264 -> viewer + MP4 recording + Videos folder: OK');
+  console.log(`${profile.id}: H264 -> viewer + MP4 recording + Videos folder: OK`);
 }
 
 run().then(() => process.exit(0), error => {

@@ -18,8 +18,9 @@ const rgbaBytes = width * height * 4;
 function makeWriter() {
   const writer = Object.create(VirtualCamWriter.prototype);
   writer.opened = true;
-  writer.staging = Buffer.alloc(offset + rgbBytes);
-  const mapped = Buffer.alloc(offset + rgbBytes);
+  writer.staging = Buffer.alloc(offset + 1920 * 1080 * 3 + 4);
+  writer.writeHeader();
+  const mapped = Buffer.alloc(writer.staging.length);
   writer.view = 0x10000n;
   writer.headerSnapshot = Buffer.alloc(32);
   writer.RtlMoveMemory = (destination, source, size) => source.copy(
@@ -56,7 +57,7 @@ assert.equal(statusWriter.isConnected(), true);
 connectionHeader.writeUInt32LE(0, 16);
 assert.equal(statusWriter.isConnected(), false);
 
-const sharedFrameSize = 32 + width * height * 3;
+const sharedFrameSize = 32 + 1920 * 1080 * 3 + 4;
 const mappedFrame = Buffer.alloc(sharedFrameSize);
 const mappedWriter = Object.create(VirtualCamWriter.prototype);
 mappedWriter.view = 0x10000n;
@@ -69,3 +70,15 @@ mappedWriter.flushToSharedMemory();
 assert.equal(mappedFrame.readUInt32LE(16), 1, 'Publishing a frame must preserve DirectShow connection state');
 
 console.log('Virtual camera color, orientation and connection state: OK');
+
+for (const [w, h, fps] of [[1280, 720, 60], [1920, 1080, 30], [1280, 720, 30]]) {
+  const pixels = Buffer.alloc(w * h * 4);
+  pixels.set([0, 0, 255, 255]);
+  assert.equal(bgraWriter.writeBgra(pixels, w, h, fps), true);
+  assert.equal(bgraWriter.staging.readUInt32LE(4), w);
+  assert.equal(bgraWriter.staging.readUInt32LE(8), h);
+  assert.equal(bgraWriter.staging.readUInt32LE(28), w * h * 3);
+  assert.equal(bgraWriter.staging.readUInt32LE(32 + 1920 * 1080 * 3), fps);
+  assert.deepEqual([...bgraWriter.staging.subarray(32 + (h - 1) * w * 3, 35 + (h - 1) * w * 3)], [0, 0, 255]);
+}
+assert.equal(bgraWriter.writeBgra(Buffer.alloc(4), 1920, 1080, 60), false);

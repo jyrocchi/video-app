@@ -10,6 +10,16 @@ La cámara frontal se deshabilita cuando CameraX no la ofrece; el servicio recha
 
 ## Matriz realmente ejecutada
 
+### Actualización: perfiles seleccionables
+
+Se volvió a ejecutar la matriz completa API 24–33, 35, 36, 37.0 y 37.2 con **4/4 pruebas aprobadas en cada imagen** (56 pruebas instrumentadas). API 34 se comprobó en el Motorola físico. La cuarta prueba configura y ejecuta MediaCodec con cuadros sintéticos para 720p30, 720p60 y 1080p30, incluyendo espejo; los tres codecs aprobaron en todas las imágenes. Esto prueba las API/configuración del codec, **no certifica captura ni rendimiento a 60 FPS en todos los teléfonos**. La tabla histórica de tres pruebas que sigue describe la validación anterior; esta ejecución agrega los perfiles nuevos.
+
+`StreamProfile` filtra por tamaño YUV nativo, duración mínima de cuadro, rango AE ordinario que termine en los FPS pedidos y capacidades AVC de tamaño/FPS/bitrate/color. No se utiliza una sesión constrained-high-speed ni se ofrece 60 FPS solo porque exista video lento a 120/240 FPS. Codificadores de hardware tienen prioridad; CBR cuando está disponible y VBR compatible en codecs antiguos. Niveles AVC Baseline: 3.1 (720p30), 3.2 (720p60), 4.0 (1080p30).
+
+La interfaz omite perfiles incompatibles. Si una cámara no ofrece ninguno, deshabilita el inicio; el servicio también valida solicitudes directas. Durante 720p60 se impide cambiar a una cámara frontal que no lo admita. Las nuevas resoluciones requieren escritorio actualizado; ante PC antigua se muestra el aviso sin enviar 1080p a un decodificador fijado en 720p. 720p30 mantiene el protocolo de compatibilidad.
+
+**Motorola edge 30 fusion / Android 14:** cámara trasera: los tres perfiles, rango fijo [60,60] disponible; frontal: 720p30 y 1080p30, máximo AE 30 FPS. USB y Wi-Fi real, incluyendo espejo a 60 FPS y 1080p, se midieron en `../CamStreamDesktop/PERFORMANCE.md`. No se ha elaborado una lista comercial de todos los modelos Android: la comprobación es por hardware/cámara al ejecutar la app.
+
 Se instalaron las imágenes oficiales x86_64 del SDK, AEHD 2.2 y el emulador **37.3.2** (canal de pruebas). La matriz se repitió con las dependencias y correcciones finales. Cada fila de emulador aprobada ejecutó **tres pruebas instrumentadas**, no solo la instalación del APK:
 
 1. Interfaz, Rotar oculto, promoción/notificación del servicio, captura y espejo cuando la cámara anuncia 720p, cambio de cámara disponible, parada del servicio. Se verifica el rechazo controlado si la cámara no ofrece la resolución requerida.

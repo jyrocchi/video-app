@@ -1,8 +1,9 @@
-// One native decode, fixed 720p BGRA for NDI/DirectShow and native MJPEG for
+// One native decode, negotiated-profile BGRA for NDI/DirectShow and native MJPEG for
 // the viewer/recorder. No BMP encoding, per-pixel JS conversion or JS JPEG encode.
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { getProfile } = require('./stream-profiles');
 
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -71,7 +72,8 @@ class JpegFrameParser {
 }
 
 class H264Decoder {
-  constructor() {
+  constructor(profileId = '720p30') {
+    this.profile = getProfile(profileId);
     this.proc = null;
     this.ffmpegReady = false;
     this.lastError = null;
@@ -99,6 +101,8 @@ class H264Decoder {
     this.stderrTail = '';
     this.waitingForConfig = true;
     this.queueBytes = 0;
+    const { width: WIDTH, height: HEIGHT, fps: FPS } = this.profile;
+    const FRAME_BYTES = WIDTH * HEIGHT * 4;
     const scale = `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${WIDTH}:${HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
     const args = [
       '-hide_banner', '-loglevel', 'warning',
@@ -121,7 +125,7 @@ class H264Decoder {
       });
       this.proc = proc;
       this.ffmpegReady = true;
-      console.log('H264 decoder: native 1280x720@30 BGRA + MJPEG');
+      console.log(`H264 decoder: native ${WIDTH}x${HEIGHT}@${FPS} BGRA + MJPEG`);
       proc.stderr.on('data', data => {
         const message = data.toString().trim();
         this.stderrTail = (this.stderrTail + message + '\n').slice(-2000);
@@ -157,8 +161,8 @@ class H264Decoder {
         this.totalJpegFrames++;
         this.onJpeg?.(frame, WIDTH, HEIGHT, Date.now());
       });
-      proc.stdout.on('data', chunk => raw.push(chunk));
-      proc.stdio[3].on('data', chunk => jpeg.push(chunk));
+      proc.stdout.on('data', chunk => { if (this.proc === proc) raw.push(chunk); });
+      proc.stdio[3].on('data', chunk => { if (this.proc === proc) jpeg.push(chunk); });
       return true;
     } catch (error) {
       this.lastError = error.message;
@@ -196,6 +200,7 @@ class H264Decoder {
   }
 
   getStats() {
+    const { width: WIDTH, height: HEIGHT, fps: FPS } = this.profile;
     return {
       width: WIDTH, height: HEIGHT, targetFps: FPS,
       queueBytes: this.queueBytes, peakQueueBytes: this.peakQueueBytes,

@@ -56,6 +56,7 @@ class StreamService : LifecycleService() {
     private var encoderSourceHeight = 0
     private var encoderOutputWidth = 0
     private var encoderOutputHeight = 0
+    private var profile = StreamProfile.HD30
 
     private val mirrorRef = AtomicBoolean(false)
     private val rotationRef = AtomicInteger(0)
@@ -94,10 +95,8 @@ class StreamService : LifecycleService() {
         const val ACTION_UPDATE_TRANSFORM = "com.anomaly.camstream.UPDATE_TRANSFORM"
         const val EXTRA_SERVER_URL = "server_url"
         const val EXTRA_FPS = "fps"
+        const val EXTRA_PROFILE = "profile"
         const val DEFAULT_FPS = 30
-        private const val TARGET_WIDTH = 1280
-        private const val TARGET_HEIGHT = 720
-        private const val TARGET_BITRATE = 6_000_000
         const val EXTRA_QUALITY = "quality"
         const val EXTRA_FACING_BACK = "facing_back"
         const val EXTRA_ROTATION = "rotation"
@@ -107,11 +106,13 @@ class StreamService : LifecycleService() {
         const val NOTIF_ID = 1
 
         fun start(ctx: Context, url: String, fps: Int, quality: Int,
-                  facingBack: Boolean, rotation: Int, mirror: Boolean) {
+                  facingBack: Boolean, rotation: Int, mirror: Boolean,
+                  profile: StreamProfile = if (fps == 60) StreamProfile.HD60 else StreamProfile.HD30) {
             val i = Intent(ctx, StreamService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_SERVER_URL, url)
                 putExtra(EXTRA_FPS, fps)
+                putExtra(EXTRA_PROFILE, profile.id)
                 putExtra(EXTRA_QUALITY, quality)
                 putExtra(EXTRA_FACING_BACK, facingBack)
                 putExtra(EXTRA_ROTATION, rotation)
@@ -158,8 +159,10 @@ class StreamService : LifecycleService() {
                     mirrorRef.set(intent.getBooleanExtra(EXTRA_MIRROR, false))
                     var facingBack = intent.getBooleanExtra(EXTRA_FACING_BACK, facingBackRef.get())
                     val requestedCamera = if (facingBack) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
-                    if (cameraProvider?.hasCamera(requestedCamera) == false) {
+                    if (cameraProvider?.hasCamera(requestedCamera) == false ||
+                        cameraProvider?.let { !cameraSupportsProfile(it, facingBack) } == true) {
                         Log.w(TAG, "Requested camera is unavailable; keeping active camera")
+                        StreamStats.addLog("La otra cámara no admite $profile; se mantiene la cámara actual")
                         facingBack = facingBackRef.get()
                     }
                     if (facingBackRef.getAndSet(facingBack) != facingBack) {
@@ -173,15 +176,16 @@ class StreamService : LifecycleService() {
                 else -> {
                     val i = intent ?: return START_STICKY
                     val url = i.getStringExtra(EXTRA_SERVER_URL).orEmpty()
-                    val fps = DEFAULT_FPS
+                    profile = StreamProfile.fromId(i.getStringExtra(EXTRA_PROFILE))
+                    val fps = profile.fps
                     val facingBack = i.getBooleanExtra(EXTRA_FACING_BACK, true)
                     val mirror = i.getBooleanExtra(EXTRA_MIRROR, false)
 
-                    uploader = FrameUploader(url)
+                    uploader = FrameUploader(url, profile)
                     uploader?.setH264Mode(true)
                     uploader?.start()
                     targetFpsRef.set(fps)
-                    bitrateRef.set(TARGET_BITRATE)
+                    bitrateRef.set(profile.bitrate)
                     rotationRef.set(0)
                     mirrorRef.set(mirror)
                     facingBackRef.set(facingBack)
@@ -195,7 +199,7 @@ class StreamService : LifecycleService() {
                     serviceActive.set(true)
                     acquireStreamingLocks(url)
                     StreamStats.reset()
-                    StreamStats.addLog("Servicio iniciado: 1280x720@${fps}, bitrate ${bitrateRef.get() / 1000}kbps máx. 8000kbps")
+                    StreamStats.addLog("Servicio iniciado: $profile, bitrate ${profile.bitrate / 1000}kbps máx. ${profile.transportBitrate / 1000}kbps")
                     captureCount.set(0)
                     cameraFrameCount.set(0)
                     lastCameraTimestampNs.set(0)
@@ -315,11 +319,15 @@ class StreamService : LifecycleService() {
     }
 
     private fun bindUseCases(provider: ProcessCameraProvider, fps: Int, facingBack: Boolean) {
+        if (!cameraSupportsProfile(provider, facingBack) || profile.encoderName() == null) {
+            StreamStats.lastError.set("bind: cámara/codificador no compatible con $profile")
+            return
+        }
         val selector = if (facingBack) CameraSelector.DEFAULT_BACK_CAMERA
                        else CameraSelector.DEFAULT_FRONT_CAMERA
 
-        val width = TARGET_WIDTH
-        val height = TARGET_HEIGHT
+        val width = profile.width
+        val height = profile.height
 
         val resolutionSelector = ResolutionSelector.Builder()
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
@@ -353,6 +361,14 @@ class StreamService : LifecycleService() {
             Log.e(TAG, "Bind failed: ${e.message}", e)
             StreamStats.lastError.set("bind: ${e.message}")
         }
+    }
+
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun cameraSupportsProfile(provider: ProcessCameraProvider, facingBack: Boolean): Boolean {
+        val facing = if (facingBack) CameraSelector.LENS_FACING_BACK else CameraSelector.LENS_FACING_FRONT
+        val info = provider.availableCameraInfos.firstOrNull { it.lensFacing == facing } ?: return false
+        return profile.supportsCamera(getSystemService(CameraManager::class.java)
+            .getCameraCharacteristics(Camera2CameraInfo.from(info).cameraId))
     }
 
     @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
@@ -427,8 +443,8 @@ class StreamService : LifecycleService() {
             val uRowStride = image.planes[1].rowStride
             val vRowStride = image.planes[2].rowStride
             val rotation = 0
-            val outputWidth = TARGET_WIDTH
-            val outputHeight = TARGET_HEIGHT
+            val outputWidth = profile.width
+            val outputHeight = profile.height
             if (h264Encoder != null && (encoderSourceWidth != image.width ||
                     encoderSourceHeight != image.height || encoderOutputWidth != outputWidth ||
                     encoderOutputHeight != outputHeight)) {

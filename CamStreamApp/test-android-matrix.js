@@ -89,9 +89,10 @@ async function runApi(api) {
       throw error;
     }
     const result = command(adb, ['-s', serial, 'shell', 'am', 'instrument', '-w', '-r',
+      '-e', 'class', 'com.anomaly.camstream.AndroidCompatibilityTest',
       'com.anomaly.camstream.debug.test/androidx.test.runner.AndroidJUnitRunner'], { timeout: 180000 });
     fs.writeFileSync(path.join(temp, `${name}-instrumentation.txt`), result);
-    if (!/OK \(3 tests\)/.test(result) || /FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed/.test(result)) {
+    if (!/OK \(4 tests\)/.test(result) || /FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed/.test(result)) {
       throw new Error(`Instrumentation failed on API ${api}:\n${result}`);
     }
     const evidence = android('logcat', '-d', '-s', 'JyroCamCompat:I');
@@ -104,7 +105,8 @@ async function runApi(api) {
       // Older images can wrap logcat before the final read; the successful
       // instrumentation outcome is the authoritative shutdown-test evidence.
       codecStopBackpressure: /test=codecShutdownWhileOutputSinkBackpressured/.test(result),
-      instrumentedTests: 3,
+       instrumentedTests: 4,
+       profileCodecs: [...evidence.matchAll(/PROFILE_CODEC=([^\r\n]+)/g)].map(match => match[1]),
       cameraTransportMirrorForeground: 'PASS' };
     console.log('ANDROID_MATRIX ' + JSON.stringify(summary));
     return summary;

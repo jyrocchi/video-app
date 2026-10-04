@@ -92,7 +92,7 @@ class NdiSender {
     this.lib = lib;
   }
 
-  sendBgra(bgraBuffer, width, height) {
+  sendBgra(bgraBuffer, width, height, fps = 30) {
     if (!this.pSend) return;
     if (width !== this.width || height !== this.height || !this.bgraBuffer) {
       this.NDIlib_send_send_video_async_v2(this.pSend, null);
@@ -109,7 +109,7 @@ class NdiSender {
       xres: width,
       yres: height,
       FourCC: FOURCC_BGRA,
-      frame_rate_N: 30,
+      frame_rate_N: fps,
       frame_rate_D: 1,
       picture_aspect_ratio: width / height,
       frame_format_type: 1,
