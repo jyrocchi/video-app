@@ -20,6 +20,8 @@ const handlers = new Map();
 const ipcEvents = new Map();
 let openedFolder = null;
 const virtualCameraRegistry = { installed: false, friendlyName: '', dllPath: '' };
+let registrationMode = 'success';
+let unloadedLibraries = 0;
 const originalNetworkInterfaces = os.networkInterfaces;
 os.networkInterfaces = () => ({
   'Radmin VPN': [{ address: '26.82.250.248', family: 'IPv4', internal: false }],
@@ -58,6 +60,32 @@ const electron = {
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (request === 'electron') return electron;
+  if (request === 'fs') {
+    return {
+      ...fs,
+      existsSync: file => registrationMode === 'missing' && String(file).endsWith('bin\\JyroCamVirtualCam.dll')
+        ? false : fs.existsSync(file),
+      readFileSync: (...args) => {
+        if (registrationMode === 'hash-error' && String(args[0]).endsWith('JyroCamVirtualCam.dll')) {
+          throw new Error('EACCES: DLL blocked during hashing');
+        }
+        return fs.readFileSync(...args);
+      }
+    };
+  }
+  if (request === 'koffi') {
+    return { load: dllPath => ({
+      func: name => () => {
+        if (registrationMode === 'denied') return -2147024891;
+        if (registrationMode === 'no-registration') return 0;
+        virtualCameraRegistry.installed = name === 'DllRegisterServer';
+        virtualCameraRegistry.friendlyName = 'JyroCam';
+        virtualCameraRegistry.dllPath = dllPath;
+        return 0;
+      },
+      unload: () => { unloadedLibraries++; }
+    }) };
+  }
   if (request === 'child_process') {
     return {
       ...childProcess,
@@ -138,6 +166,28 @@ async function run() {
   assert.equal(info.virtualCamInstalled, true);
   assert.equal(info.virtualCamUpdated, true, 'Updated JyroCam driver should stay current after restart');
   assert.equal((await request('/status')).status, 200);
+
+  // The button must not report success for a missing/blocked DLL or a no-op registration.
+  const setCamera = install => handlers.get('set-virtual-camera')({}, install);
+  registrationMode = 'missing';
+  assert.match(setCamera(true).error, /Historial de protección/);
+  assert.equal(handlers.get('get-info')().virtualCamUpdated, false);
+  registrationMode = 'hash-error';
+  assert.match(setCamera(true).error, /EACCES/);
+  registrationMode = 'denied';
+  assert.match(setCamera(true).error, /80070005/);
+  virtualCameraRegistry.installed = false;
+  registrationMode = 'no-registration';
+  assert.match(setCamera(true).error, /no confirmó/);
+  registrationMode = 'success';
+  assert.equal(setCamera(true).ok, true);
+  assert.equal(handlers.get('get-info')().virtualCamUpdated, true);
+  registrationMode = 'no-registration';
+  assert.equal(setCamera(false).ok, false);
+  registrationMode = 'success';
+  assert.equal(setCamera(false).ok, true);
+  assert.equal(handlers.get('get-info')().virtualCamInstalled, false);
+  assert.equal(unloadedLibraries, 5, 'Release the DLL after successful and failed registration');
 
   const ffmpeg = require('ffmpeg-static');
   const source = spawn(ffmpeg, [

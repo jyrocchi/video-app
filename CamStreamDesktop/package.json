@@ -5,6 +5,9 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "build:virtual-camera": "virtual-cam\\build.bat",
+    "prebuild": "npm run build:virtual-camera",
+    "prepack": "npm run build:virtual-camera",
     "test": "node test/virtual-cam-color.js && node test/image-adjustments.js && node test/ndi-retry.js && node test/decoder-resolution.js && node test/stream-integration.js && node test/stream-integration.js 720p60 && node test/stream-integration.js 1080p30",
     "build": "electron-builder --win portable --x64",
     "pack": "electron-builder --dir --win --x64"

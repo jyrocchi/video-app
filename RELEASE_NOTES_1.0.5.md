@@ -8,6 +8,18 @@
 
 ## Cambios
 
+### Corrección de cámara virtual — 5 de octubre de 2026
+
+- Se actualizó el ejecutable Windows de este release conservando la versión **1.0.5**. Descárgalo nuevamente si no podías instalar la cámara virtual.
+- Se reconstruyó la DLL desde el código fuente después de confirmar que Defender había retirado la anterior del paquete y de la instalación (`Trojan:Win32/Bearfoos.A!ml`). El nuevo binario pasó el análisis local de Defender sin nuevas detecciones.
+- El botón **Instalar cámara virtual** comprueba el registro efectivo en Windows y muestra un error útil si falta la DLL, se bloquea su lectura o falla el registro. Se corrigió la propagación de errores del registro COM y la liberación de la DLL después de instalar.
+- El empaquetado recompila automáticamente el filtro DirectShow. Validación: `npm test`, registro COM, enumeración DirectShow y captura de cinco cuadros 720p30 con FFmpeg.
+- Cierra la aplicación anterior, abre el portable actualizado, pulsa **Instalar/Actualizar cámara virtual** y vuelve a abrir la aplicación que vaya a usar **JyroCam**.
+- El APK Android conserva su contenido y SHA256. El archivo de hashes incluye el nuevo ejecutable Windows.
+- El tag `v1.0.5` conserva la publicación original; el código de la corrección se publica en la rama [`compatibilidad-android-resolucion-fija`](https://github.com/jyrocchi/video-app/tree/compatibilidad-android-resolucion-fija).
+
+### Funciones de 1.0.5
+
 - **PC:** controles de brillo, contraste y saturación (0–200 %, 100 % neutro), persistentes y restablecibles. Se aplican al visor y a las salidas de cámara virtual y NDI; la grabación conserva el cuadro original.
 - **PC/NDI:** detección del runtime NDI, estado de disponibilidad recuperable y posibilidad de reintentar o recrear el sender sin reiniciar JyroCam.
 - **PC:** el control «Oscurecer vista» también envía cuadros negros a la cámara virtual y NDI.

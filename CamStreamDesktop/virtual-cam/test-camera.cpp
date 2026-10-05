@@ -37,7 +37,7 @@ int wmain() {
         VariantInit(&value);
         if (SUCCEEDED(moniker->BindToStorage(NULL, NULL, IID_IPropertyBag, (void**)&bag)) &&
             SUCCEEDED(bag->Read(L"FriendlyName", &value, NULL)) && value.vt == VT_BSTR &&
-            wcscmp(value.bstrVal, L"CamStream Virtual Camera") == 0) {
+            wcscmp(value.bstrVal, FILTER_FRIENDLY_NAME) == 0) {
             IBaseFilter* enumeratedFilter = NULL;
             HRESULT bindHr = moniker->BindToObject(NULL, NULL, IID_IBaseFilter, (void**)&enumeratedFilter);
             wprintf(L"Moniker BindToObject HRESULT=0x%08X filter=%p\n", (unsigned)bindHr, enumeratedFilter);

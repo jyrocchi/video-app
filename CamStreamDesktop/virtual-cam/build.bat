@@ -10,12 +10,14 @@ if not exist "%VCVARS%" (
 call "%VCVARS%" >nul 2>&1
 if errorlevel 1 (
   call "%VCVARS%"
+  if errorlevel 1 exit /b 1
 )
 
 set "SRC=%~dp0"
 set "OUT=%~dp0bin"
 
 if not exist "%OUT%" mkdir "%OUT%"
+pushd "%SRC%"
 
 cl /nologo /W3 /O2 /EHsc /std:c++17 /D_WIN32_WINNT=0x0601 ^
    /I"%WindowsSdkDir%Include\%WindowsSDKVersion%um" ^
@@ -26,7 +28,13 @@ cl /nologo /W3 /O2 /EHsc /std:c++17 /D_WIN32_WINNT=0x0601 ^
    /link /DEF:"%SRC%CamStreamVirtualCam.def" strmiids.lib ole32.lib oleaut32.lib user32.lib advapi32.lib winmm.lib
 
 if errorlevel 1 (
+  popd
   echo Compilacion FALLIDA
+  exit /b 1
+)
+popd
+if not exist "%OUT%\JyroCamVirtualCam.dll" (
+  echo La DLL compilada no esta disponible. Revisa el historial de proteccion de Windows.
   exit /b 1
 )
 

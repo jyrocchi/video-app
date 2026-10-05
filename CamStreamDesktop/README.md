@@ -16,6 +16,12 @@ El portable actual se genera como `dist/JyroCam-Portable-1.0.3.exe` y el APK And
 
 Antes de iniciar otra copia, cierra la instancia anterior que escuche en el puerto 8080. Para conectarte por USB: `C:\Android\platform-tools\adb.exe reverse tcp:8080 tcp:8080`; usa `http://127.0.0.1:8080` en Android. Por Wi-Fi usa la IP del PC que muestra la ventana. Para instalar el dispositivo, pulsa **Instalar cámara virtual** y vuelve a abrir la aplicación que vaya a consumirla.
 
+### Si no se instala la cámara virtual
+
+El instalador comprueba la DLL y confirma el registro de Windows antes de indicar éxito. Si falta o está bloqueada, revisa **Seguridad de Windows → Historial de protección**. El 5 de octubre de 2026 se confirmó que Defender había retirado la DLL de 1.0.5 con la detección `Trojan:Win32/Bearfoos.A!ml`, tanto del portable extraído como de la carpeta de instalación. Se reconstruyó desde el código fuente y se verificó localmente el nuevo binario con Defender, registro COM, enumeración DirectShow y captura FFmpeg. Esto no establece que la detección anterior fuese un falso positivo.
+
+`npm run build` y `npm run pack` ahora recompilan automáticamente la DLL mediante `npm run build:virtual-camera` (requiere Visual Studio Build Tools y Windows SDK). Para comprobar una instalación real, ejecuta `virtual-cam\test-camera.bat`: debe poder crear el filtro y abrir el dispositivo **JyroCam** enumerado por DirectShow. Las pruebas de integración cubren DLL ausente, error de lectura, HRESULT de acceso denegado y registro que devuelve éxito sin instalar el dispositivo.
+
 ## Flujo y archivos
 
 `POST /stream-h264` recibe NAL H.264 con prefijo de longitud de 4 bytes en big-endian. `main.js` mantiene una conexión activa, respeta backpressure y entrega NAL a `h264-decoder.js` (FFmpeg); `POST /upload-h264` sigue disponible para clientes anteriores. El visor Electron muestra solo el JPEG más reciente mientras termina de renderizar. `/status` expone métricas y `/frame.jpg` el último cuadro.

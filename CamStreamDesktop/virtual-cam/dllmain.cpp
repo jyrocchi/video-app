@@ -146,26 +146,42 @@ STDAPI DllRegisterServer() {
 
     HKEY hKey = NULL;
     WCHAR path[MAX_PATH];
-    GetModuleFileNameW(g_hInstance, path, MAX_PATH);
+    DWORD pathLength = GetModuleFileNameW(g_hInstance, path, MAX_PATH);
+    if (pathLength == 0 || pathLength >= MAX_PATH) {
+        DWORD error = pathLength == 0 ? GetLastError() : ERROR_INSUFFICIENT_BUFFER;
+        if (uninitialize) CoUninitialize();
+        return HRESULT_FROM_WIN32(error);
+    }
 
     WCHAR subkey[256];
     FormatClsidKey(subkey, 256, NULL);
 
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, NULL, 0,
-                         KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS)
-        return E_FAIL;
-
-    RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)FILTER_NAME,
-                   (DWORD)(wcslen(FILTER_NAME) + 1) * sizeof(WCHAR));
-    RegCloseKey(hKey);
+    LONG result = RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, NULL, 0,
+                                  KEY_WRITE, NULL, &hKey, NULL);
+    if (result == ERROR_SUCCESS) {
+        result = RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)FILTER_NAME,
+                               (DWORD)(wcslen(FILTER_NAME) + 1) * sizeof(WCHAR));
+        RegCloseKey(hKey);
+    }
+    if (result != ERROR_SUCCESS) {
+        if (uninitialize) CoUninitialize();
+        return HRESULT_FROM_WIN32(result);
+    }
 
     FormatClsidKey(subkey, 256, L"InprocServer32");
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, NULL, 0,
-                         KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)path,
-                       (DWORD)(wcslen(path) + 1) * sizeof(WCHAR));
-        RegSetValueExW(hKey, L"ThreadingModel", 0, REG_SZ, (BYTE*)L"Both", 10);
+    result = RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, NULL, 0,
+                             KEY_WRITE, NULL, &hKey, NULL);
+    if (result == ERROR_SUCCESS) {
+        result = RegSetValueExW(hKey, NULL, 0, REG_SZ, (BYTE*)path,
+                               (DWORD)(wcslen(path) + 1) * sizeof(WCHAR));
+        if (result == ERROR_SUCCESS)
+            result = RegSetValueExW(hKey, L"ThreadingModel", 0, REG_SZ,
+                                   (BYTE*)L"Both", sizeof(L"Both"));
         RegCloseKey(hKey);
+    }
+    if (result != ERROR_SUCCESS) {
+        if (uninitialize) CoUninitialize();
+        return HRESULT_FROM_WIN32(result);
     }
 
     // RegisterFilter writes to the machine-wide category on many Windows

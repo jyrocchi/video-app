@@ -141,8 +141,13 @@ function getVirtualCamStatus() {
   // /ve selects the unnamed registry value; its label is localized by Windows.
   const registeredDll = /^\s*.+?\s+REG_SZ\s+(.+?)\s*$/im
     .exec(moduleRegistration.stdout || '')?.[1]?.trim().replace(/^"|"$/g, '');
-  const expectedDll = getInstalledVirtualCamDll();
+  // Protection software can remove the source between existence and hash checks.
+  let expectedDll;
+  try {
+    if (fs.existsSync(getVirtualCamDllSource())) expectedDll = getInstalledVirtualCamDll();
+  } catch (_) {}
   const updated = friendlyName?.toLowerCase() === 'jyrocam' && registeredDll &&
+    expectedDll &&
     path.resolve(registeredDll).toLowerCase() === path.resolve(expectedDll).toLowerCase() &&
     fs.existsSync(expectedDll);
   return { installed: true, updated: !!updated, connected, state: updated ? 'current' : 'outdated' };
@@ -150,10 +155,13 @@ function getVirtualCamStatus() {
 
 function setVirtualCamRegistration(install) {
   const source = getVirtualCamDllSource();
-  if (!fs.existsSync(source)) return { ok: false, error: `No se encuentra el filtro DirectShow: ${source}` };
-
-  const installedDll = getInstalledVirtualCamDll(source);
+  let library;
   try {
+    if (!fs.existsSync(source)) {
+      return { ok: false, error: `Falta la DLL de la cámara virtual: ${source}. ` +
+        'El paquete está incompleto o el antivirus la retiró. Revisa Seguridad de Windows > Historial de protección y utiliza una compilación verificada de JyroCam.' };
+    }
+    const installedDll = getInstalledVirtualCamDll(source);
     if (install) {
       fs.mkdirSync(path.dirname(installedDll), { recursive: true });
       // Content-addressed filenames let Windows keep an older DLL loaded while
@@ -162,13 +170,23 @@ function setVirtualCamRegistration(install) {
     }
     const dllPath = install ? installedDll : (fs.existsSync(installedDll) ? installedDll : source);
     const koffi = require('koffi');
-    const library = koffi.load(dllPath);
+    library = koffi.load(dllPath);
     const entry = library.func(install ? 'DllRegisterServer' : 'DllUnregisterServer', 'int', []);
     const hr = entry();
     if (hr < 0) return { ok: false, error: `${install ? 'Registro' : 'Desregistro'} HRESULT 0x${(hr >>> 0).toString(16)}` };
+    const status = getVirtualCamStatus();
+    if (install ? !status.updated : status.installed) {
+      return { ok: false, error: 'Windows no confirmó el cambio de la cámara virtual. ' +
+        'Revisa Seguridad de Windows > Historial de protección y vuelve a intentarlo con una compilación verificada.' };
+    }
     return { ok: true, installed: install };
   } catch (e) {
-    return { ok: false, error: e.message };
+    return { ok: false, error: `${e.message}. Si Windows bloqueó o retiró la DLL, revisa Seguridad de Windows > Historial de protección.` };
+  } finally {
+    // Registration must not keep the filter DLL locked in the Electron process.
+    if (library) {
+      try { library.unload(); } catch (e) { console.warn('VirtualCam unload:', e.message); }
+    }
   }
 }
 
