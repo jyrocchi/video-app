@@ -1,4 +1,4 @@
-# Otra app que agarra la cámara Android → PC versión minimax m3 y openai (ciclando entre sol y luna)!!
+# Otra app que agarra la cámara Android → PC versión minimax m3 y openai!
 
 Recomiendo usar la ip local en vez de usb.
 Si sienten que existe una latencia grande al momento de transmitir: pausa-esperar-activa!
